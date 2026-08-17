@@ -1115,6 +1115,24 @@ class App:
     def handle_live_output_line(self, line):
         now = time.time()
         stripped = line.strip()
+        lower_line = line.lower()
+
+        if (
+            self.selected_cookies_browser == "Aucun"
+            and self.is_youtube_authentication_error(line)
+        ):
+            self.youtube_auth_error_seen = True
+            return
+
+        if (
+            self.selected_cookies_browser == "Aucun"
+            and getattr(self, "youtube_auth_error_seen", False)
+            and (
+                lower_line.startswith("error:")
+                or "cookies" in lower_line
+            )
+        ):
+            return
 
         progress_info = self.parse_progress_line(line)
 
@@ -1159,8 +1177,6 @@ class App:
                 self.last_log_ui_update = now
 
             return
-
-        lower_line = line.lower()
 
         if "merging formats into" in lower_line:
             self.set_status_threadsafe("Fusion en cours...")
@@ -1928,6 +1944,8 @@ class App:
                 "Téléchargement en cours..."
             )
 
+            self.youtube_auth_error_seen = False
+
             returncode, output_text = (
                 self.run_command_live(cmd)
             )
@@ -2224,9 +2242,56 @@ class App:
                 lambda: self.on_download_error(str(e))
             )
 
+    @staticmethod
+    def is_youtube_authentication_error(error_text):
+        text = (error_text or "").lower()
+
+        indicators = (
+            "sign in to confirm your age",
+            "sign in to confirm you're not a bot",
+            "sign in to confirm you are not a bot",
+            "this video is age-restricted",
+            "use --cookies-from-browser",
+            "use --cookies for the authentication",
+            "confirm your age",
+        )
+
+        return any(indicator in text for indicator in indicators)
+
+    def show_youtube_authentication_message(self):
+        self.set_status("Authentification YouTube necessaire.")
+
+        summary = (
+            "La video est valide, mais YouTube demande une session "
+            "authentifiee.\n\n"
+            "Cela peut arriver pour une restriction d'age, une "
+            "verification anti-robot ou une autre restriction d'acces.\n\n"
+            "Connecte-toi a YouTube dans Firefox ou Opera, puis relance "
+            "le telechargement en selectionnant ce navigateur dans "
+            "Cookies YouTube. Chrome et Edge sont souvent moins fiables "
+            "pour la lecture de leurs cookies."
+        )
+
+        self.append_log(
+            "Authentification YouTube necessaire : utilise Firefox "
+            "ou Opera puis relance le telechargement."
+        )
+
+        messagebox.showwarning(
+            "Connexion YouTube necessaire",
+            summary
+        )
+
     def on_fetch_error(self, error_text):
         self.choose_format_btn.config(state="normal")
         self.start_btn.config(state="disabled")
+
+        if (
+            self.selected_cookies_browser == "Aucun"
+            and self.is_youtube_authentication_error(error_text)
+        ):
+            self.show_youtube_authentication_message()
+            return
 
         self.set_status(
             "Échec de lecture des formats."
@@ -2243,6 +2308,13 @@ class App:
     def on_download_error(self, error_text):
         self.start_btn.config(state="normal")
         self.choose_format_btn.config(state="normal")
+
+        if (
+            self.selected_cookies_browser == "Aucun"
+            and self.is_youtube_authentication_error(error_text)
+        ):
+            self.show_youtube_authentication_message()
+            return
 
         self.set_status(
             "Échec du téléchargement."
