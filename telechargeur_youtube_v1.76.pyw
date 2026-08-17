@@ -11,6 +11,18 @@ import webbrowser
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from auth_support import (
+    AuthErrorDetector,
+    AuthErrorInfo,
+    AuthErrorType,
+    CookiePreferenceStore,
+    CookieSource,
+    CookieSourceKind,
+    find_firefox,
+    sanitize_technical_text,
+    validate_netscape_cookie_file,
+)
+
 
 APP_TITLE = "Téléchargeur Vidéo V7.3 by Clemzy"
 WINDOW_SIZE = "650x780"
@@ -49,6 +61,37 @@ COOKIE_BROWSER_IDS = {
     "Firefox": "firefox",
     "Brave": "brave",
     "Opera": "opera",
+}
+
+AUTH_ERROR_SUMMARIES = {
+    AuthErrorType.AGE_RESTRICTED: (
+        "Cette vidéo nécessite probablement une vérification d'âge.",
+        "Le site demande de vérifier votre compte ou votre âge avant de donner accès à la vidéo.",
+    ),
+    AuthErrorType.LOGIN_REQUIRED: (
+        "Cette vidéo nécessite probablement une connexion.",
+        "Le site demande une session connectée pour accéder à ce contenu.",
+    ),
+    AuthErrorType.COOKIES_REQUIRED: (
+        "Cette vidéo nécessite des cookies de session.",
+        "yt-dlp indique qu'une session de navigateur est nécessaire pour continuer.",
+    ),
+    AuthErrorType.COOKIE_EXTRACTION_FAILED: (
+        "Impossible de lire les cookies du navigateur choisi.",
+        "Vos cookies ne sont pas endommagés : Windows ou le navigateur peut empêcher une application externe de les lire.",
+    ),
+    AuthErrorType.COOKIE_DECRYPTION_FAILED: (
+        "Impossible de déchiffrer les cookies du navigateur choisi.",
+        "Vos cookies ne sont pas endommagés : la protection de Windows ou du navigateur peut empêcher yt-dlp de les utiliser.",
+    ),
+    AuthErrorType.COOKIES_EXPIRED_OR_INVALID: (
+        "Les cookies utilisés ne semblent plus utilisables.",
+        "La session a peut-être expiré, le compte n'est peut-être pas connecté au site, ou le site a refusé ces cookies.",
+    ),
+    AuthErrorType.UNKNOWN_AUTH_ERROR: (
+        "Cette vidéo semble nécessiter une authentification.",
+        "Le site demande probablement de vérifier votre compte, votre âge ou votre session.",
+    ),
 }
 
 SOCIAL_LINKS = [
@@ -426,6 +469,164 @@ class FormatSelector(tk.Toplevel):
         self.destroy()
 
 
+class AuthenticationAssistant(tk.Toplevel):
+    """Compact, opt-in recovery window for yt-dlp authentication failures."""
+
+    def __init__(self, parent, error_info, firefox_path, remembered_cookie_path, callbacks):
+        super().__init__(parent)
+        self.error_info = error_info
+        self.firefox_path = firefox_path
+        self.remembered_cookie_path = remembered_cookie_path
+        self.callbacks = callbacks
+        self.details_visible = False
+
+        self.title("Aide à l'authentification")
+        self.geometry("620x390")
+        self.minsize(560, 330)
+        self.resizable(True, True)
+        apply_app_icon(self)
+        self.transient(parent)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.build_ui()
+
+    def build_ui(self):
+        frame = tk.Frame(self)
+        frame.pack(fill="both", expand=True, padx=18, pady=16)
+
+        title, explanation = AUTH_ERROR_SUMMARIES[self.error_info.error_type]
+        tk.Label(
+            frame,
+            text=title,
+            font=("Segoe UI", 12, "bold"),
+            anchor="w",
+            justify="left",
+        ).pack(fill="x")
+        tk.Label(
+            frame,
+            text=explanation + "\n\nLe logiciel peut essayer plusieurs méthodes simples.",
+            anchor="w",
+            justify="left",
+            wraplength=560,
+        ).pack(fill="x", pady=(8, 14))
+
+        action_frame = tk.Frame(frame)
+        action_frame.pack(fill="x")
+
+        if self.firefox_path:
+            firefox_text = "Utiliser ma connexion Firefox  —  Recommandé"
+            firefox_state = "normal"
+        else:
+            firefox_text = "Firefox n'a pas été détecté sur cet ordinateur"
+            firefox_state = "disabled"
+        tk.Button(
+            action_frame,
+            text=firefox_text,
+            command=self.use_firefox,
+            state=firefox_state,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 7), ipady=4)
+
+        tk.Label(
+            action_frame,
+            text=(
+                "Si vous êtes connecté au site dans Firefox, yt-dlp utilisera temporairement "
+                "les cookies de cette session. Aucune copie n'est conservée."
+            ),
+            fg="#555555",
+            anchor="w",
+            justify="left",
+            wraplength=555,
+        ).pack(fill="x", padx=4, pady=(0, 10))
+
+        tk.Button(
+            action_frame,
+            text="Choisir un fichier cookies.txt",
+            command=self.choose_cookie_file,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 7), ipady=4)
+
+        if self.remembered_cookie_path and os.path.isfile(self.remembered_cookie_path):
+            tk.Button(
+                action_frame,
+                text="Réutiliser le fichier cookies.txt mémorisé",
+                command=self.use_remembered_cookie_file,
+                anchor="w",
+            ).pack(fill="x", pady=(0, 7), ipady=4)
+            tk.Button(
+                action_frame,
+                text="Oublier le fichier mémorisé",
+                command=lambda: self.callbacks["forget_remembered_cookie_file"](self),
+                anchor="w",
+            ).pack(fill="x", pady=(0, 7), ipady=2)
+
+        # A repeat can help for transient account/rate checks, but is omitted
+        # for explicit age restrictions and browser decryption failures.
+        if self.error_info.error_type in {
+            AuthErrorType.LOGIN_REQUIRED,
+            AuthErrorType.UNKNOWN_AUTH_ERROR,
+        }:
+            tk.Button(
+                action_frame,
+                text="Réessayer normalement",
+                command=self.retry_normally,
+                anchor="w",
+            ).pack(fill="x", pady=(0, 7), ipady=3)
+
+        footer = tk.Frame(frame)
+        footer.pack(fill="x", side="bottom", pady=(12, 0))
+        tk.Button(footer, text="En savoir plus", command=self.toggle_details).pack(side="left")
+        tk.Button(footer, text="Annuler", command=self.destroy).pack(side="right")
+
+    def _run_callback(self, name, *args):
+        self.destroy()
+        self.callbacks[name](*args)
+
+    def use_firefox(self):
+        self._run_callback("use_firefox")
+
+    def choose_cookie_file(self):
+        self.callbacks["choose_cookie_file"](self)
+
+    def use_remembered_cookie_file(self):
+        self._run_callback("use_remembered_cookie_file")
+
+    def retry_normally(self):
+        self._run_callback("retry_normally")
+
+    def toggle_details(self):
+        if self.details_visible:
+            self.details_box.destroy()
+            self.details_visible = False
+            self.geometry("620x390")
+            return
+
+        source = self.error_info.cookie_source.label()
+        technical = self.error_info.safe_output or "(yt-dlp n'a pas fourni de détail supplémentaire.)"
+        details = (
+            "Pourquoi cela arrive\n"
+            "Certaines vidéos demandent une session connectée, une vérification d'âge ou une vérification anti-robot.\n\n"
+            "Méthodes disponibles\n"
+            "Firefox est recommandé : il évite souvent les limites des navigateurs Chromium sous Windows. "
+            "Vous pouvez aussi sélectionner un fichier Netscape cookies.txt. En dernier recours, certains navigateurs "
+            "ou outils d'export permettent de créer ce fichier localement.\n\n"
+            "Chromium sous Windows\n"
+            "Chrome et plusieurs navigateurs Chromium utilisent des protections comme DPAPI et App-Bound Encryption. "
+            "Selon Windows et le navigateur, yt-dlp peut ne pas réussir à lire leurs cookies. Le logiciel ne désactive "
+            "jamais ces protections.\n\n"
+            "Détails techniques\n"
+            f"Catégorie : {self.error_info.error_type.value}\n"
+            f"Code de retour yt-dlp : {self.error_info.returncode}\n"
+            f"Source de cookies : {source}\n\n"
+            f"Message yt-dlp :\n{technical}"
+        )
+        self.details_box = tk.Text(self, height=13, wrap="word")
+        self.details_box.pack(fill="both", expand=True, padx=18, pady=(0, 14))
+        self.details_box.insert("1.0", details)
+        self.details_box.config(state="disabled")
+        self.details_visible = True
+        self.geometry("620x650")
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -456,6 +657,10 @@ class App:
         self.selected_download_url = None
         self.selected_playlist_mode = False
         self.selected_cookies_browser = "Aucun"
+        self.selected_cookie_source = CookieSource.none()
+        self.auth_preferences = CookiePreferenceStore()
+        self.pending_cookie_file_for_preference = None
+        self.last_auth_error_info = None
 
         self.last_progress_ui_update = 0.0
         self.last_log_ui_update = 0.0
@@ -571,6 +776,12 @@ class App:
             fg="#666666",
             anchor="w"
         ).pack(side="left", padx=(12, 0))
+
+        tk.Button(
+            cookies_frame,
+            text="Aide à l'authentification",
+            command=self.open_authentication_assistant_manually,
+        ).pack(side="right")
 
         button_style = ttk.Style()
         button_style.configure(
@@ -898,7 +1109,16 @@ class App:
 
         return "video"
 
-    def build_ytdlp_runtime_options(self, cookies_browser):
+    def cookie_source_from_main_ui(self):
+        browser = self.cookies_browser_var.get()
+        browser_id = COOKIE_BROWSER_IDS.get(browser)
+        return (
+            CookieSource.browser_source(browser_id)
+            if browser_id
+            else CookieSource.none()
+        )
+
+    def build_ytdlp_runtime_options(self, cookie_source=None):
         options = []
         js_runtime = find_js_runtime()
 
@@ -908,15 +1128,153 @@ class App:
                 f"node:{js_runtime}",
             ])
 
-        browser_id = COOKIE_BROWSER_IDS.get(cookies_browser)
+        source = cookie_source or CookieSource.none()
 
-        if browser_id:
+        if source.kind is CookieSourceKind.BROWSER and source.browser:
             options.extend([
                 "--cookies-from-browser",
-                browser_id,
+                source.browser,
+            ])
+
+        elif source.kind is CookieSourceKind.FILE and source.file_path:
+            options.extend([
+                "--cookies",
+                source.file_path,
             ])
 
         return options
+
+    def open_authentication_assistant_manually(self):
+        info = AuthErrorInfo(
+            AuthErrorType.UNKNOWN_AUTH_ERROR,
+            0,
+            "",
+            "",
+            self.cookie_source_from_main_ui(),
+        )
+        self.open_authentication_assistant(info)
+
+    def open_authentication_assistant(self, error_info):
+        self.last_auth_error_info = error_info
+        remembered_path = self.auth_preferences.get_cookie_file_path()
+        if remembered_path and not os.path.isfile(remembered_path):
+            self.auth_preferences.forget_cookie_file_path()
+            self.append_log("Emplacement mémorisé cookies.txt introuvable : préférence supprimée.")
+            remembered_path = None
+        dialog = AuthenticationAssistant(
+            self.root,
+            error_info,
+            find_firefox(),
+            remembered_path,
+            {
+                "use_firefox": self.use_firefox_authentication,
+                "choose_cookie_file": self.choose_cookie_file_authentication,
+                "use_remembered_cookie_file": self.use_remembered_cookie_file,
+                "forget_remembered_cookie_file": self.forget_remembered_cookie_file,
+                "retry_normally": self.retry_without_authentication,
+            },
+        )
+        dialog.grab_set()
+
+    def authentication_source_log_label(self, source):
+        if source.kind is CookieSourceKind.BROWSER:
+            return f"navigateur {source.browser}"
+        if source.kind is CookieSourceKind.FILE:
+            return f"fichier cookies.txt : {source.file_path}"
+        return "sans cookies"
+
+    def retry_without_authentication(self):
+        self.start_authentication_format_flow(CookieSource.none())
+
+    def use_firefox_authentication(self):
+        firefox_path = find_firefox()
+        if not firefox_path:
+            messagebox.showinfo(
+                "Firefox non détecté",
+                "Firefox n'a pas été détecté sur cet ordinateur. "
+                "Vous pouvez sélectionner un fichier cookies.txt à la place.",
+            )
+            return
+        self.start_authentication_format_flow(CookieSource.browser_source("firefox"))
+
+    def choose_cookie_file_authentication(self, dialog):
+        file_path = filedialog.askopenfilename(
+            parent=dialog,
+            title="Choisir un fichier cookies.txt",
+            filetypes=[
+                ("Fichier cookies.txt", "*.txt"),
+                ("Tous les fichiers", "*.*"),
+            ],
+        )
+        if not file_path:
+            return
+
+        valid, message = validate_netscape_cookie_file(file_path)
+        if not valid:
+            messagebox.showerror("Fichier cookies.txt", message, parent=dialog)
+            return
+
+        dialog.destroy()
+        self.pending_cookie_file_for_preference = file_path
+        self.start_authentication_format_flow(CookieSource.file_source(file_path))
+
+    def use_remembered_cookie_file(self):
+        file_path = self.auth_preferences.get_cookie_file_path()
+        if not file_path:
+            return
+        valid, message = validate_netscape_cookie_file(file_path)
+        if not valid:
+            self.auth_preferences.forget_cookie_file_path()
+            messagebox.showwarning(
+                "Fichier cookies.txt indisponible",
+                message + "\n\nSon emplacement mémorisé a été supprimé.",
+            )
+            return
+        self.pending_cookie_file_for_preference = file_path
+        self.start_authentication_format_flow(CookieSource.file_source(file_path))
+
+    def forget_remembered_cookie_file(self, dialog):
+        self.auth_preferences.forget_cookie_file_path()
+        self.append_log("Emplacement du fichier cookies.txt oublié.")
+        dialog.destroy()
+        messagebox.showinfo(
+            "Préférence supprimée",
+            "L'application a oublié l'emplacement du fichier cookies.txt. "
+            "Aucun fichier n'a été copié ni supprimé.",
+        )
+
+    def start_authentication_format_flow(self, cookie_source):
+        self.append_log(
+            "Assistant d'authentification : essai avec "
+            + self.authentication_source_log_label(cookie_source)
+        )
+        self.choose_format_flow(cookie_source=cookie_source)
+
+    def offer_cookie_file_preference(self, cookie_source):
+        if (
+            cookie_source.kind is not CookieSourceKind.FILE
+            or not cookie_source.file_path
+            or cookie_source.file_path != self.pending_cookie_file_for_preference
+        ):
+            return
+
+        self.pending_cookie_file_for_preference = None
+        remember = messagebox.askyesno(
+            "cookies.txt fonctionnel",
+            "L'authentification avec ce fichier a fonctionné.\n\n"
+            "Voulez-vous mémoriser uniquement son emplacement pour le réutiliser plus tard ?\n\n"
+            "Le fichier n'est pas copié. Il doit rester à cet emplacement.",
+        )
+        if not remember:
+            return
+        try:
+            self.auth_preferences.remember_cookie_file_path(cookie_source.file_path)
+            self.append_log("Emplacement du fichier cookies.txt mémorisé (sans copie du fichier).")
+        except OSError as exc:
+            messagebox.showwarning(
+                "Préférence non enregistrée",
+                f"Le téléchargement peut continuer, mais l'emplacement n'a pas pu être mémorisé.\n\n{exc}",
+            )
 
     def add_history_entry(self, file_path, conversion_text):
         folder = (
@@ -1117,20 +1475,18 @@ class App:
         stripped = line.strip()
         lower_line = line.lower()
 
-        if (
-            self.selected_cookies_browser == "Aucun"
-            and self.is_youtube_authentication_error(line)
-        ):
+        auth_info = AuthErrorDetector.detect(
+            1,
+            stderr_text=line,
+            cookie_source=self.selected_cookie_source,
+        )
+        if auth_info:
             self.youtube_auth_error_seen = True
             return
 
         if (
-            self.selected_cookies_browser == "Aucun"
-            and getattr(self, "youtube_auth_error_seen", False)
-            and (
-                lower_line.startswith("error:")
-                or "cookies" in lower_line
-            )
+            getattr(self, "youtube_auth_error_seen", False)
+            and (lower_line.startswith("error:") or "cookies" in lower_line)
         ):
             return
 
@@ -1537,10 +1893,10 @@ class App:
 
         return False
 
-    def choose_format_flow(self):
+    def choose_format_flow(self, cookie_source=None):
         url = self.url_var.get().strip()
         playlist_mode = self.playlist_mode_var.get()
-        cookies_browser = self.cookies_browser_var.get()
+        source = cookie_source or self.cookie_source_from_main_ui()
 
         if not url:
             messagebox.showerror(
@@ -1555,7 +1911,8 @@ class App:
         self.selected_download_title = None
         self.selected_download_url = None
         self.selected_playlist_mode = playlist_mode
-        self.selected_cookies_browser = cookies_browser
+        self.selected_cookie_source = source
+        self.selected_cookies_browser = source.browser or "Aucun"
         self.set_conversion_controls("none")
 
         self.reset_progress()
@@ -1570,7 +1927,7 @@ class App:
 
         threading.Thread(
             target=self.fetch_formats_worker,
-            args=(url, playlist_mode, cookies_browser),
+            args=(url, playlist_mode, source),
             daemon=True
         ).start()
 
@@ -1614,13 +1971,13 @@ class App:
                 folder,
                 self.selected_download_format,
                 self.selected_playlist_mode,
-            self.selected_download_title,
-                self.selected_cookies_browser,
+                self.selected_download_title,
+                self.selected_cookie_source,
             ),
             daemon=True
         ).start()
 
-    def fetch_formats_worker(self, url, playlist_mode, cookies_browser):
+    def fetch_formats_worker(self, url, playlist_mode, cookie_source):
         try:
             downloader = find_downloader()
 
@@ -1630,7 +1987,7 @@ class App:
                 url
             ]
             cmd.extend(
-                self.build_ytdlp_runtime_options(cookies_browser)
+                self.build_ytdlp_runtime_options(cookie_source)
             )
 
             returncode, stdout_text, stderr_text = (
@@ -1638,15 +1995,11 @@ class App:
             )
 
             if returncode != 0:
-                err = (
-                    stderr_text
-                    or stdout_text
-                    or "Erreur inconnue"
-                ).strip()
+                err = (stderr_text + "\n" + stdout_text).strip() or "Erreur inconnue"
 
                 self.root.after(
                     0,
-                    lambda: self.on_fetch_error(err)
+                    lambda: self.on_fetch_error(err, cookie_source, returncode)
                 )
 
                 return
@@ -1755,14 +2108,15 @@ class App:
                     url,
                     parsed,
                     title,
-                    playlist_mode
+                    playlist_mode,
+                    cookie_source,
                 )
             )
 
         except Exception as e:
             self.root.after(
                 0,
-                lambda: self.on_fetch_error(str(e))
+                lambda: self.on_fetch_error(str(e), cookie_source, -1)
             )
 
     def show_format_dialog(
@@ -1770,7 +2124,8 @@ class App:
         url,
         formats_list,
         title,
-        playlist_mode
+        playlist_mode,
+        cookie_source,
     ):
         self.current_formats_list = formats_list
 
@@ -1785,6 +2140,8 @@ class App:
         self.append_log(
             f"Titre détecté : {title}"
         )
+
+        self.offer_cookie_file_preference(cookie_source)
 
         ffmpeg_path = find_ffmpeg()
 
@@ -1818,6 +2175,7 @@ class App:
         self.selected_download_title = title
         self.selected_download_url = url
         self.selected_playlist_mode = playlist_mode
+        self.selected_cookie_source = cookie_source
 
         selected_kind = self.get_selected_format_kind(selected)
         self.set_conversion_controls(selected_kind)
@@ -1895,7 +2253,7 @@ class App:
         selected_format,
         playlist_mode,
         detected_title,
-        cookies_browser
+        cookie_source
     ):
         try:
             downloader = find_downloader()
@@ -1931,7 +2289,7 @@ class App:
                 ])
 
             cmd.extend(
-                self.build_ytdlp_runtime_options(cookies_browser)
+                self.build_ytdlp_runtime_options(cookie_source)
             )
 
             if selected_format == "BEST_AUTO":
@@ -2233,99 +2591,70 @@ class App:
 
                 self.root.after(
                     0,
-                    lambda: self.on_download_error(err)
+                    lambda: self.on_download_error(err, cookie_source, returncode)
                 )
 
         except Exception as e:
             self.root.after(
                 0,
-                lambda: self.on_download_error(str(e))
+                lambda: self.on_download_error(str(e), cookie_source, -1)
             )
 
-    @staticmethod
-    def is_youtube_authentication_error(error_text):
-        text = (error_text or "").lower()
-
-        indicators = (
-            "sign in to confirm your age",
-            "sign in to confirm you're not a bot",
-            "sign in to confirm you are not a bot",
-            "this video is age-restricted",
-            "use --cookies-from-browser",
-            "use --cookies for the authentication",
-            "confirm your age",
+    def handle_authentication_error(self, error_text, cookie_source, returncode):
+        info = AuthErrorDetector.detect(
+            returncode,
+            stderr_text=error_text,
+            cookie_source=cookie_source,
         )
+        if not info:
+            return False
 
-        return any(indicator in text for indicator in indicators)
-
-    def show_youtube_authentication_message(self):
-        self.set_status("Authentification YouTube necessaire.")
-
-        summary = (
-            "La video est valide, mais YouTube demande une session "
-            "authentifiee.\n\n"
-            "Cela peut arriver pour une restriction d'age, une "
-            "verification anti-robot ou une autre restriction d'acces.\n\n"
-            "Connecte-toi a YouTube dans Firefox ou Opera, puis relance "
-            "le telechargement en selectionnant ce navigateur dans "
-            "Cookies YouTube. Chrome et Edge sont souvent moins fiables "
-            "pour la lecture de leurs cookies."
-        )
-
+        self.set_status("Authentification necessaire.")
         self.append_log(
-            "Authentification YouTube necessaire : utilise Firefox "
-            "ou Opera puis relance le telechargement."
+            "Authentification necessaire : "
+            f"{info.error_type.value} ({self.authentication_source_log_label(cookie_source)})."
         )
+        self.open_authentication_assistant(info)
+        return True
 
-        messagebox.showwarning(
-            "Connexion YouTube necessaire",
-            summary
-        )
-
-    def on_fetch_error(self, error_text):
+    def on_fetch_error(self, error_text, cookie_source=None, returncode=-1):
         self.choose_format_btn.config(state="normal")
         self.start_btn.config(state="disabled")
 
-        if (
-            self.selected_cookies_browser == "Aucun"
-            and self.is_youtube_authentication_error(error_text)
-        ):
-            self.show_youtube_authentication_message()
+        source = cookie_source or self.selected_cookie_source
+        if self.handle_authentication_error(error_text, source, returncode):
             return
 
         self.set_status(
             "Échec de lecture des formats."
         )
 
-        self.append_log(error_text)
+        self.append_log(sanitize_technical_text(error_text))
 
         messagebox.showerror(
             "Erreur",
             f"Impossible de récupérer les formats.\n\n"
-            f"{error_text}"
+                f"{sanitize_technical_text(error_text)}"
         )
 
-    def on_download_error(self, error_text):
+    def on_download_error(self, error_text, cookie_source=None, returncode=-1):
         self.start_btn.config(state="normal")
         self.choose_format_btn.config(state="normal")
 
-        if (
-            self.selected_cookies_browser == "Aucun"
-            and self.is_youtube_authentication_error(error_text)
-        ):
-            self.show_youtube_authentication_message()
+        source = cookie_source or self.selected_cookie_source
+        if self.handle_authentication_error(error_text, source, returncode):
             return
 
         self.set_status(
             "Échec du téléchargement."
         )
 
-        self.append_log(error_text)
+        self.append_log(sanitize_technical_text(error_text))
 
         messagebox.showerror(
             "Erreur",
             f"Le téléchargement a échoué.\n\n"
-            f"{error_text}"
+                f"{sanitize_technical_text(error_text)}"
         )
 
     def on_success(self, folder, main_file):

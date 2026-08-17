@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.75.pyw
+  current_source: telechargeur_youtube_v1.76.pyw
   current_app_label: "Téléchargeur Vidéo V7.3 by Clemzy"
-  next_source_version: "1.76"
+  next_source_version: "1.77"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite."
 
 USER_PREFERENCES:
@@ -28,9 +28,12 @@ REPO_STATE:
   source_history:
     - telechargeur_youtube_v1.72b.pyw: ancienne base
     - telechargeur_youtube_v1.74.pyw: version précédente, renommée en 1.75
-    - telechargeur_youtube_v1.75.pyw: version actuelle
+    - telechargeur_youtube_v1.75.pyw: version précédente
+    - telechargeur_youtube_v1.76.pyw: assistant d'authentification et gestion cookies.txt
   files_expected:
-    - telechargeur_youtube_v1.75.pyw
+    - telechargeur_youtube_v1.76.pyw
+    - auth_support.py
+    - test_auth_support.py
     - yt-dlp.exe
     - social_paypal.png
     - social_pc32.png
@@ -100,6 +103,19 @@ VERSION_1_75_CHANGE:
   - Message recommends Firefox or Opera and explains age/anti-bot/authenticated restrictions.
   - Non-authentication errors remain detailed.
   - Source was renamed from v1.74 to v1.75 and pushed in commit 7d8ca90.
+
+VERSION_1_76_CHANGE:
+  - Added auth_support.py to centralize yt-dlp authentication error detection,
+    Firefox discovery, Netscape cookies.txt validation, and safe technical output.
+  - Added a compact Tkinter authentication assistant, available manually and after
+    detected authentication, cookie extraction, or cookie decryption failures.
+  - Firefox is the recommended automatic method. Chromium remains available in
+    the existing selector but is not promoted by the assistant.
+  - Added optional storage of only a cookies.txt path in
+    %LOCALAPPDATA%\StreamDL\authentication.json after a successful authentication.
+    Cookie contents are never copied, logged, committed, or bundled.
+  - Added test_auth_support.py. Run: py -3.13 -m unittest -v test_auth_support.py
+  - Added cookies*.txt to .gitignore.
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc
