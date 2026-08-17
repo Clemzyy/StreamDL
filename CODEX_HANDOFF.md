@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.78.pyw
+  current_source: telechargeur_youtube_v1.79.pyw
   current_app_label: "Téléchargeur Vidéo V7.3 by Clemzy"
-  next_source_version: "1.79"
+  next_source_version: "1.80"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite."
 
 USER_PREFERENCES:
@@ -32,11 +32,14 @@ REPO_STATE:
     - telechargeur_youtube_v1.76.pyw: assistant d'authentification et gestion cookies.txt
     - telechargeur_youtube_v1.77.pyw: guide d'export manuel Chrome cookies.txt
     - telechargeur_youtube_v1.78.pyw: copie temporaire cookies YouTube filtrée et suppression source optionnelle
+    - telechargeur_youtube_v1.79.pyw: Deno local pour les défis JavaScript YouTube
   files_expected:
-    - telechargeur_youtube_v1.78.pyw
+    - telechargeur_youtube_v1.79.pyw
     - auth_support.py
     - test_auth_support.py
     - yt-dlp.exe
+    - deno.exe
+    - DENO_LICENSE.md
     - social_paypal.png
     - social_pc32.png
     - social_tiktok.png
@@ -70,9 +73,9 @@ CURRENT_IMPLEMENTATION:
     location: same directory as source
   javascript_runtime:
     implementation: find_js_runtime()
-    preferred: node.exe
-    local_environment: "Node v24.18.0 at C:\Program Files\nodejs\node.exe"
-    command_option: "--js-runtimes node:<path>"
+    preferred: deno.exe
+    local_environment: "Deno 2.9.5 bundled beside yt-dlp.exe"
+    command_option: "--js-runtimes deno:<path>"
   cookies_ui:
     values: [Aucun, Chrome, Edge, Firefox, Brave, Opera]
     mapping:
@@ -137,6 +140,13 @@ VERSION_1_78_CHANGE:
     This is a normal deletion, not a forensic overwrite guarantee on SSDs.
   - The remembered preference continues to store only the original path; each reuse creates a new
     temporary filtered copy.
+
+VERSION_1_79_CHANGE:
+  - Bundled official Deno 2.9.5 Windows x64 beside yt-dlp.exe, after SHA-256 verification against
+    the checksum published with the official Deno release.
+  - find_js_runtime() now prioritizes bundled Deno, then Deno on PATH, then legacy Node support.
+  - This enables yt-dlp's current YouTube JavaScript challenge solving without a separate Deno
+    installation or PATH modification. Deno MIT license is included in DENO_LICENSE.md.
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc

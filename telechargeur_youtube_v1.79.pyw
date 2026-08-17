@@ -178,13 +178,30 @@ def find_ffmpeg():
 
 
 def find_js_runtime():
+    # Deno is the runtime officially recommended by yt-dlp for YouTube EJS.
+    # A bundled copy makes the desktop application work without PATH changes.
+    for folder in (get_base_dir(), get_app_dir()):
+        deno_path = os.path.join(folder, "deno.exe")
+
+        if os.path.isfile(deno_path):
+            return "deno", deno_path
+
+    path_deno = shutil.which("deno")
+    if path_deno:
+        return "deno", path_deno
+
+    # Keep compatibility with existing portable Node deployments.
     for folder in (get_base_dir(), get_app_dir()):
         node_path = os.path.join(folder, "node.exe")
 
         if os.path.isfile(node_path):
-            return node_path
+            return "node", node_path
 
-    return shutil.which("node")
+    path_node = shutil.which("node")
+    if path_node:
+        return "node", path_node
+
+    return None
 
 
 def find_app_icon():
@@ -1193,9 +1210,10 @@ class App:
         js_runtime = find_js_runtime()
 
         if js_runtime:
+            runtime_name, runtime_path = js_runtime
             options.extend([
                 "--js-runtimes",
-                f"node:{js_runtime}",
+                f"{runtime_name}:{runtime_path}",
             ])
 
         source = cookie_source or CookieSource.none()
