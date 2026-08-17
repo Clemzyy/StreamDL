@@ -18,6 +18,8 @@ from auth_support import (
     CookiePreferenceStore,
     CookieSource,
     CookieSourceKind,
+    create_youtube_only_cookie_copy,
+    delete_temporary_cookie_file,
     find_firefox,
     sanitize_technical_text,
     validate_netscape_cookie_file,
@@ -725,7 +727,10 @@ class App:
         self.selected_cookie_source = CookieSource.none()
         self.auth_preferences = CookiePreferenceStore()
         self.pending_cookie_file_for_preference = None
+        self.temporary_cookie_file_paths = set()
         self.last_auth_error_info = None
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_application_close)
 
         self.last_progress_ui_update = 0.0
         self.last_log_ui_update = 0.0
@@ -1279,9 +1284,11 @@ class App:
             messagebox.showerror("Fichier cookies.txt", message, parent=dialog)
             return
 
+        source = self.prepare_youtube_cookie_source(file_path, dialog)
+        if not source:
+            return
         dialog.destroy()
-        self.pending_cookie_file_for_preference = file_path
-        self.start_authentication_format_flow(CookieSource.file_source(file_path))
+        self.start_authentication_format_flow(source)
 
     def use_remembered_cookie_file(self):
         file_path = self.auth_preferences.get_cookie_file_path()
@@ -1295,8 +1302,9 @@ class App:
                 message + "\n\nSon emplacement mémorisé a été supprimé.",
             )
             return
-        self.pending_cookie_file_for_preference = file_path
-        self.start_authentication_format_flow(CookieSource.file_source(file_path))
+        source = self.prepare_youtube_cookie_source(file_path)
+        if source:
+            self.start_authentication_format_flow(source)
 
     def forget_remembered_cookie_file(self, dialog):
         self.auth_preferences.forget_cookie_file_path()
@@ -1307,6 +1315,49 @@ class App:
             "L'application a oublié l'emplacement du fichier cookies.txt. "
             "Aucun fichier n'a été copié ni supprimé.",
         )
+
+    def prepare_youtube_cookie_source(self, original_path, parent=None):
+        """Use a short-lived YouTube-only copy, never the broad export itself."""
+        try:
+            temporary_path, cookie_count = create_youtube_only_cookie_copy(original_path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror(
+                "Filtrage du fichier cookies.txt",
+                str(exc),
+                parent=parent,
+            )
+            return None
+
+        self.temporary_cookie_file_paths.add(temporary_path)
+        self.pending_cookie_file_for_preference = original_path
+        self.append_log(
+            "Copie temporaire cookies.txt limitée à YouTube créée "
+            f"({cookie_count} entrée(s), contenu non affiché)."
+        )
+        return CookieSource.file_source(temporary_path)
+
+    def cleanup_temporary_cookie_source(self, cookie_source):
+        if (
+            not cookie_source
+            or cookie_source.kind is not CookieSourceKind.FILE
+            or not cookie_source.file_path
+            or cookie_source.file_path not in self.temporary_cookie_file_paths
+        ):
+            return
+
+        if delete_temporary_cookie_file(cookie_source.file_path):
+            self.append_log("Copie temporaire cookies.txt supprimée.")
+        else:
+            self.append_log("Impossible de supprimer immédiatement la copie temporaire cookies.txt.")
+        self.temporary_cookie_file_paths.discard(cookie_source.file_path)
+
+    def cleanup_all_temporary_cookie_sources(self):
+        for temporary_path in tuple(self.temporary_cookie_file_paths):
+            self.cleanup_temporary_cookie_source(CookieSource.file_source(temporary_path))
+
+    def on_application_close(self):
+        self.cleanup_all_temporary_cookie_sources()
+        self.root.destroy()
 
     def start_authentication_format_flow(self, cookie_source):
         self.append_log(
@@ -1319,21 +1370,52 @@ class App:
         if (
             cookie_source.kind is not CookieSourceKind.FILE
             or not cookie_source.file_path
-            or cookie_source.file_path != self.pending_cookie_file_for_preference
+            or cookie_source.file_path not in self.temporary_cookie_file_paths
+            or not self.pending_cookie_file_for_preference
         ):
             return
 
+        original_path = self.pending_cookie_file_for_preference
         self.pending_cookie_file_for_preference = None
+
+        delete_original = messagebox.askyesno(
+            "Protéger le fichier cookies.txt",
+            "L'authentification a fonctionné avec une copie temporaire limitée à YouTube. "
+            "Cette copie sera supprimée automatiquement après le téléchargement.\n\n"
+            "Voulez-vous aussi supprimer maintenant le fichier exporté d'origine ?\n\n"
+            "Attention : ce fichier peut contenir des cookies d'autres sites. Cette suppression "
+            "est définitive dans l'application, mais ne constitue pas un effacement forensic "
+            "garanti sur un SSD.",
+        )
+        if delete_original:
+            try:
+                os.remove(original_path)
+                if self.auth_preferences.get_cookie_file_path() == original_path:
+                    self.auth_preferences.forget_cookie_file_path()
+                self.append_log("Fichier cookies.txt original supprimé à la demande de l'utilisateur.")
+                messagebox.showinfo(
+                    "Fichier source supprimé",
+                    "Le fichier cookies.txt original a été supprimé. Seule la copie temporaire "
+                    "limitée à YouTube reste utilisée pour ce téléchargement, puis sera supprimée.",
+                )
+            except OSError as exc:
+                messagebox.showwarning(
+                    "Suppression impossible",
+                    f"Le fichier source n'a pas pu être supprimé.\n\n{exc}",
+                )
+            return
+
         remember = messagebox.askyesno(
             "cookies.txt fonctionnel",
             "L'authentification avec ce fichier a fonctionné.\n\n"
             "Voulez-vous mémoriser uniquement son emplacement pour le réutiliser plus tard ?\n\n"
-            "Le fichier n'est pas copié. Il doit rester à cet emplacement.",
+            "Le fichier n'est pas copié. Il doit rester à cet emplacement. À chaque utilisation, "
+            "le logiciel créera uniquement une copie temporaire limitée à YouTube.",
         )
         if not remember:
             return
         try:
-            self.auth_preferences.remember_cookie_file_path(cookie_source.file_path)
+            self.auth_preferences.remember_cookie_file_path(original_path)
             self.append_log("Emplacement du fichier cookies.txt mémorisé (sans copie du fichier).")
         except OSError as exc:
             messagebox.showwarning(
@@ -1963,6 +2045,11 @@ class App:
         playlist_mode = self.playlist_mode_var.get()
         source = cookie_source or self.cookie_source_from_main_ui()
 
+        # Starting a different selection makes any previous temporary source
+        # unnecessary. It is never reused outside its current auth attempt.
+        if source != self.selected_cookie_source:
+            self.cleanup_temporary_cookie_source(self.selected_cookie_source)
+
         if not url:
             messagebox.showerror(
                 "Erreur",
@@ -2230,6 +2317,7 @@ class App:
             self.set_status("Choix annulé.")
             self.append_log("Choix du format annulé.")
             self.reset_progress()
+            self.cleanup_temporary_cookie_source(cookie_source)
             return
 
         self.append_log(
@@ -2687,6 +2775,7 @@ class App:
         self.start_btn.config(state="disabled")
 
         source = cookie_source or self.selected_cookie_source
+        self.cleanup_temporary_cookie_source(source)
         if self.handle_authentication_error(error_text, source, returncode):
             return
 
@@ -2707,6 +2796,7 @@ class App:
         self.choose_format_btn.config(state="normal")
 
         source = cookie_source or self.selected_cookie_source
+        self.cleanup_temporary_cookie_source(source)
         if self.handle_authentication_error(error_text, source, returncode):
             return
 
@@ -2723,6 +2813,7 @@ class App:
         )
 
     def on_success(self, folder, main_file):
+        self.cleanup_temporary_cookie_source(self.selected_cookie_source)
         self.start_btn.config(state="normal")
         self.choose_format_btn.config(state="normal")
 

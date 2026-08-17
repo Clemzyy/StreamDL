@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
@@ -230,10 +231,90 @@ def validate_netscape_cookie_file(file_path: str) -> tuple[bool, str]:
     if not lines or lines[0].strip() not in {"# HTTP Cookie File", "# Netscape HTTP Cookie File"}:
         return False, "Ce fichier ne semble pas être un cookies.txt Netscape valide."
 
-    cookie_lines = [line for line in lines if not line.lstrip().startswith("#")]
+    # #HttpOnly_ is a Netscape cookie line, not an ordinary comment.
+    cookie_lines = [
+        line for line in lines
+        if not line.lstrip().startswith("#") or line.startswith("#HttpOnly_")
+    ]
     if not any(len(line.split("\t")) >= 7 for line in cookie_lines):
         return False, "Le fichier ne contient pas de ligne de cookie Netscape exploitable."
     return True, "Fichier cookies.txt valide."
+
+
+def _is_youtube_cookie_domain(domain: str) -> bool:
+    """Allow only youtube.com and its subdomains; never broad Google cookies."""
+    normalized = domain.lower().lstrip(".")
+    return normalized == "youtube.com" or normalized.endswith(".youtube.com")
+
+
+def create_youtube_only_cookie_copy(source_path: str) -> tuple[str, int]:
+    """Create a user-temp Netscape file containing only YouTube-domain cookies.
+
+    The source file is never changed. Cookie values are copied only into the
+    short-lived file required by yt-dlp and are never logged or returned.
+    """
+    valid, message = validate_netscape_cookie_file(source_path)
+    if not valid:
+        raise ValueError(message)
+
+    try:
+        source_lines = Path(source_path).read_text(
+            encoding="utf-8-sig", errors="replace"
+        ).splitlines()
+    except OSError as exc:
+        raise OSError(f"Impossible de lire le fichier : {exc}") from exc
+
+    selected_lines = []
+    for line in source_lines:
+        # A Netscape HttpOnly cookie begins with #HttpOnly_, while other #
+        # lines are comments and must not be copied because they may reveal
+        # information about the original export.
+        cookie_line = line
+        if line.startswith("#HttpOnly_"):
+            cookie_line = line[len("#HttpOnly_"):]
+        elif line.lstrip().startswith("#"):
+            continue
+
+        fields = cookie_line.split("\t")
+        if len(fields) >= 7 and _is_youtube_cookie_domain(fields[0]):
+            selected_lines.append(line)
+
+    if not selected_lines:
+        raise ValueError(
+            "Le fichier ne contient aucun cookie pour youtube.com. "
+            "Exportez les cookies du site YouTube, puis réessayez."
+        )
+
+    handle, temporary_path = tempfile.mkstemp(
+        prefix="streamdl-youtube-",
+        suffix=".cookies.txt",
+    )
+    try:
+        # mkstemp creates a file with user-only permissions where supported.
+        os.chmod(temporary_path, stat.S_IREAD | stat.S_IWRITE)
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\r\n") as output:
+            output.write("# Netscape HTTP Cookie File\n")
+            output.write("\n".join(selected_lines))
+            output.write("\n")
+    except Exception:
+        try:
+            os.remove(temporary_path)
+        except OSError:
+            pass
+        raise
+
+    return temporary_path, len(selected_lines)
+
+
+def delete_temporary_cookie_file(file_path: str) -> bool:
+    """Best-effort removal of a temporary cookie file; never overwrite data."""
+    try:
+        os.remove(file_path)
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
 
 
 class CookiePreferenceStore:

@@ -7,6 +7,8 @@ from auth_support import (
     AuthErrorType,
     CookiePreferenceStore,
     CookieSource,
+    create_youtube_only_cookie_copy,
+    delete_temporary_cookie_file,
     sanitize_technical_text,
     validate_netscape_cookie_file,
 )
@@ -79,6 +81,33 @@ class CookieFileValidationTests(unittest.TestCase):
             self.assertFalse(valid)
         finally:
             os.remove(path)
+
+    def test_youtube_only_temporary_copy_excludes_other_sites(self):
+        handle, source_path = tempfile.mkstemp(suffix=".txt")
+        temporary_path = None
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as output:
+                output.write(
+                    "# Netscape HTTP Cookie File\n"
+                    ".youtube.com\tTRUE\t/\tTRUE\t0\tSID\tyoutube-secret\n"
+                    "#HttpOnly_.m.youtube.com\tTRUE\t/\tTRUE\t0\tHSID\tyoutube-http-only\n"
+                    ".example.com\tTRUE\t/\tTRUE\t0\tSID\tother-secret\n"
+            )
+            temporary_path, count = create_youtube_only_cookie_copy(source_path)
+            with open(temporary_path, encoding="utf-8") as temporary_file:
+                content = temporary_file.read()
+            self.assertEqual(count, 2)
+            self.assertIn("youtube-secret", content)
+            self.assertIn("youtube-http-only", content)
+            self.assertNotIn("example.com", content)
+            self.assertNotIn("other-secret", content)
+            self.assertTrue(delete_temporary_cookie_file(temporary_path))
+            self.assertFalse(os.path.exists(temporary_path))
+            temporary_path = None
+        finally:
+            if temporary_path:
+                delete_temporary_cookie_file(temporary_path)
+            os.remove(source_path)
 
 
 class CookiePreferenceTests(unittest.TestCase):

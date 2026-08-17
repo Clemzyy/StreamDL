@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.77.pyw
+  current_source: telechargeur_youtube_v1.78.pyw
   current_app_label: "Téléchargeur Vidéo V7.3 by Clemzy"
-  next_source_version: "1.78"
+  next_source_version: "1.79"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite."
 
 USER_PREFERENCES:
@@ -31,8 +31,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.75.pyw: version précédente
     - telechargeur_youtube_v1.76.pyw: assistant d'authentification et gestion cookies.txt
     - telechargeur_youtube_v1.77.pyw: guide d'export manuel Chrome cookies.txt
+    - telechargeur_youtube_v1.78.pyw: copie temporaire cookies YouTube filtrée et suppression source optionnelle
   files_expected:
-    - telechargeur_youtube_v1.77.pyw
+    - telechargeur_youtube_v1.78.pyw
     - auth_support.py
     - test_auth_support.py
     - yt-dlp.exe
@@ -126,6 +127,16 @@ VERSION_1_77_CHANGE:
     computer, and that Firefox remains the recommended automatic method.
   - No browser cookie is exported, read, copied, logged, or stored by the application; the user
     returns to the existing file picker after exporting a Netscape-format file manually.
+
+VERSION_1_78_CHANGE:
+  - A user-selected cookies.txt is now read into a temporary file containing only youtube.com
+    and its subdomains; the original export is never modified.
+  - The temporary YouTube-only file is removed after success, failure, cancelled format choice,
+    a new format selection, or application closure.
+  - After successful authentication, the user can explicitly delete the original exported file.
+    This is a normal deletion, not a forensic overwrite guarantee on SSDs.
+  - The remembered preference continues to store only the original path; each reuse creates a new
+    temporary filtered copy.
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc
