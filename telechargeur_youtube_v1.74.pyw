@@ -34,6 +34,23 @@ VIDEO_CONVERSION_OPTIONS = [
     "WEBM",
 ]
 
+COOKIE_BROWSER_OPTIONS = [
+    "Aucun",
+    "Chrome",
+    "Edge",
+    "Firefox",
+    "Brave",
+    "Opera",
+]
+
+COOKIE_BROWSER_IDS = {
+    "Chrome": "chrome",
+    "Edge": "edge",
+    "Firefox": "firefox",
+    "Brave": "brave",
+    "Opera": "opera",
+}
+
 SOCIAL_LINKS = [
     (
         "TikTok",
@@ -105,6 +122,16 @@ def find_ffmpeg():
         return path_ffmpeg
 
     return None
+
+
+def find_js_runtime():
+    for folder in (get_base_dir(), get_app_dir()):
+        node_path = os.path.join(folder, "node.exe")
+
+        if os.path.isfile(node_path):
+            return node_path
+
+    return shutil.which("node")
 
 
 def find_app_icon():
@@ -416,6 +443,7 @@ class App:
         self.delete_audio_source_var = tk.BooleanVar(value=True)
         self.delete_video_source_var = tk.BooleanVar(value=True)
         self.playlist_mode_var = tk.BooleanVar(value=False)
+        self.cookies_browser_var = tk.StringVar(value="Aucun")
 
         self.progress_percent_var = tk.StringVar(value="0.0 %")
         self.progress_speed_var = tk.StringVar(value="Vitesse : -")
@@ -427,6 +455,7 @@ class App:
         self.selected_download_title = None
         self.selected_download_url = None
         self.selected_playlist_mode = False
+        self.selected_cookies_browser = "Aucun"
 
         self.last_progress_ui_update = 0.0
         self.last_log_ui_update = 0.0
@@ -515,6 +544,33 @@ class App:
             text="Autoriser le téléchargement d'une playlist complète",
             variable=self.playlist_mode_var
         ).pack(fill="x", padx=12, pady=(6, 0))
+
+        cookies_frame = tk.Frame(self.root)
+        cookies_frame.pack(fill="x", padx=12, pady=(4, 0))
+
+        tk.Label(
+            cookies_frame,
+            text="Cookies YouTube :",
+            width=18,
+            anchor="w"
+        ).pack(side="left")
+
+        self.cookies_browser_combo = ttk.Combobox(
+            cookies_frame,
+            textvariable=self.cookies_browser_var,
+            values=COOKIE_BROWSER_OPTIONS,
+            state="readonly",
+            width=22
+        )
+        self.cookies_browser_combo.pack(side="left", padx=(8, 0))
+        self.cookies_browser_combo.current(0)
+
+        tk.Label(
+            cookies_frame,
+            text="(choisis ton navigateur si YouTube demande une connexion)",
+            fg="#666666",
+            anchor="w"
+        ).pack(side="left", padx=(12, 0))
 
         button_style = ttk.Style()
         button_style.configure(
@@ -841,6 +897,26 @@ class App:
                 return "video"
 
         return "video"
+
+    def build_ytdlp_runtime_options(self, cookies_browser):
+        options = []
+        js_runtime = find_js_runtime()
+
+        if js_runtime:
+            options.extend([
+                "--js-runtimes",
+                f"node:{js_runtime}",
+            ])
+
+        browser_id = COOKIE_BROWSER_IDS.get(cookies_browser)
+
+        if browser_id:
+            options.extend([
+                "--cookies-from-browser",
+                browser_id,
+            ])
+
+        return options
 
     def add_history_entry(self, file_path, conversion_text):
         folder = (
@@ -1448,6 +1524,7 @@ class App:
     def choose_format_flow(self):
         url = self.url_var.get().strip()
         playlist_mode = self.playlist_mode_var.get()
+        cookies_browser = self.cookies_browser_var.get()
 
         if not url:
             messagebox.showerror(
@@ -1462,6 +1539,7 @@ class App:
         self.selected_download_title = None
         self.selected_download_url = None
         self.selected_playlist_mode = playlist_mode
+        self.selected_cookies_browser = cookies_browser
         self.set_conversion_controls("none")
 
         self.reset_progress()
@@ -1476,7 +1554,7 @@ class App:
 
         threading.Thread(
             target=self.fetch_formats_worker,
-            args=(url, playlist_mode),
+            args=(url, playlist_mode, cookies_browser),
             daemon=True
         ).start()
 
@@ -1520,12 +1598,13 @@ class App:
                 folder,
                 self.selected_download_format,
                 self.selected_playlist_mode,
-                self.selected_download_title,
+            self.selected_download_title,
+                self.selected_cookies_browser,
             ),
             daemon=True
         ).start()
 
-    def fetch_formats_worker(self, url, playlist_mode):
+    def fetch_formats_worker(self, url, playlist_mode, cookies_browser):
         try:
             downloader = find_downloader()
 
@@ -1534,6 +1613,9 @@ class App:
                 "--yes-playlist" if playlist_mode else "--no-playlist",
                 url
             ]
+            cmd.extend(
+                self.build_ytdlp_runtime_options(cookies_browser)
+            )
 
             returncode, stdout_text, stderr_text = (
                 self.run_command_json(cmd)
@@ -1796,7 +1878,8 @@ class App:
         folder,
         selected_format,
         playlist_mode,
-        detected_title
+        detected_title,
+        cookies_browser
     ):
         try:
             downloader = find_downloader()
@@ -1830,6 +1913,10 @@ class App:
                     "--ffmpeg-location",
                     ffmpeg_path
                 ])
+
+            cmd.extend(
+                self.build_ytdlp_runtime_options(cookies_browser)
+            )
 
             if selected_format == "BEST_AUTO":
                 cmd.extend([
