@@ -63,6 +63,14 @@ COOKIE_BROWSER_IDS = {
     "Opera": "opera",
 }
 
+# Referenced by the official yt-dlp FAQ for a manual Netscape cookies.txt export.
+# This is intentionally a manual, opt-in fallback: the application never exports
+# browser cookies and never receives their contents.
+CHROME_COOKIE_EXPORT_EXTENSION_URL = (
+    "https://chromewebstore.google.com/detail/get-cookiestxt-locally/"
+    "cclelndahbckbenkjhflpdbgdldlbecc"
+)
+
 AUTH_ERROR_SUMMARIES = {
     AuthErrorType.AGE_RESTRICTED: (
         "Cette vidéo nécessite probablement une vérification d'âge.",
@@ -481,8 +489,8 @@ class AuthenticationAssistant(tk.Toplevel):
         self.details_visible = False
 
         self.title("Aide à l'authentification")
-        self.geometry("620x390")
-        self.minsize(560, 330)
+        self.geometry("620x445")
+        self.minsize(560, 390)
         self.resizable(True, True)
         apply_app_icon(self)
         self.transient(parent)
@@ -545,6 +553,24 @@ class AuthenticationAssistant(tk.Toplevel):
             anchor="w",
         ).pack(fill="x", pady=(0, 7), ipady=4)
 
+        tk.Button(
+            action_frame,
+            text="Exporter un cookies.txt depuis Chrome (méthode manuelle)",
+            command=self.open_chrome_cookie_export_help,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 4), ipady=2)
+        tk.Label(
+            action_frame,
+            text=(
+                "Solution de dernier recours : préférez Firefox si possible. "
+                "N'utilisez cette méthode que sur votre ordinateur personnel."
+            ),
+            fg="#8A5200",
+            anchor="w",
+            justify="left",
+            wraplength=555,
+        ).pack(fill="x", padx=4, pady=(0, 10))
+
         if self.remembered_cookie_path and os.path.isfile(self.remembered_cookie_path):
             tk.Button(
                 action_frame,
@@ -593,11 +619,47 @@ class AuthenticationAssistant(tk.Toplevel):
     def retry_normally(self):
         self._run_callback("retry_normally")
 
+    def open_chrome_cookie_export_help(self):
+        """Ask for informed consent before opening the third-party extension page."""
+        should_open = messagebox.askokcancel(
+            "Exporter les cookies depuis Chrome",
+            "Firefox reste la méthode recommandée.\n\n"
+            "Cette solution manuelle utilise une extension Chrome pour créer un fichier "
+            "cookies.txt lisible par yt-dlp. Ce fichier peut contenir des données donnant "
+            "accès à votre session sur plusieurs sites : traitez-le comme un mot de passe.\n\n"
+            "Ne l'utilisez pas sur un ordinateur public, partagé ou professionnel, et ne "
+            "transmettez jamais le fichier à quelqu'un.\n\n"
+            "Le navigateur va ouvrir la page Chrome Web Store de « Get cookies.txt LOCALLY », "
+            "citée par la FAQ de yt-dlp. Après l'export au format Netscape cookies.txt, revenez "
+            "ici et choisissez le fichier créé.",
+            parent=self,
+        )
+        if not should_open:
+            return
+
+        try:
+            opened = webbrowser.open(CHROME_COOKIE_EXPORT_EXTENSION_URL)
+        except Exception as exc:
+            messagebox.showerror(
+                "Ouverture impossible",
+                f"Impossible d'ouvrir le Chrome Web Store.\n\n{exc}",
+                parent=self,
+            )
+            return
+
+        if not opened:
+            messagebox.showwarning(
+                "Ouverture du navigateur",
+                "Le navigateur n'a pas pu être ouvert automatiquement. Vous pouvez chercher "
+                "« Get cookies.txt LOCALLY » dans le Chrome Web Store.",
+                parent=self,
+            )
+
     def toggle_details(self):
         if self.details_visible:
             self.details_box.destroy()
             self.details_visible = False
-            self.geometry("620x390")
+            self.geometry("620x445")
             return
 
         source = self.error_info.cookie_source.label()
@@ -607,8 +669,11 @@ class AuthenticationAssistant(tk.Toplevel):
             "Certaines vidéos demandent une session connectée, une vérification d'âge ou une vérification anti-robot.\n\n"
             "Méthodes disponibles\n"
             "Firefox est recommandé : il évite souvent les limites des navigateurs Chromium sous Windows. "
-            "Vous pouvez aussi sélectionner un fichier Netscape cookies.txt. En dernier recours, certains navigateurs "
-            "ou outils d'export permettent de créer ce fichier localement.\n\n"
+            "Vous pouvez aussi sélectionner un fichier Netscape cookies.txt. En dernier recours, le bouton "
+            "« Exporter un cookies.txt depuis Chrome » ouvre une extension citée par la FAQ officielle de yt-dlp. "
+            "Installez-la uniquement sur un ordinateur personnel, exportez le fichier au format Netscape, puis "
+            "sélectionnez-le ici. Un cookies.txt peut contenir des sessions de plusieurs sites : ne le partagez pas, "
+            "et évitez de mémoriser son emplacement sur un ordinateur partagé.\n\n"
             "Chromium sous Windows\n"
             "Chrome et plusieurs navigateurs Chromium utilisent des protections comme DPAPI et App-Bound Encryption. "
             "Selon Windows et le navigateur, yt-dlp peut ne pas réussir à lire leurs cookies. Le logiciel ne désactive "

@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.76.pyw
+  current_source: telechargeur_youtube_v1.77.pyw
   current_app_label: "Téléchargeur Vidéo V7.3 by Clemzy"
-  next_source_version: "1.77"
+  next_source_version: "1.78"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite."
 
 USER_PREFERENCES:
@@ -30,8 +30,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.74.pyw: version précédente, renommée en 1.75
     - telechargeur_youtube_v1.75.pyw: version précédente
     - telechargeur_youtube_v1.76.pyw: assistant d'authentification et gestion cookies.txt
+    - telechargeur_youtube_v1.77.pyw: guide d'export manuel Chrome cookies.txt
   files_expected:
-    - telechargeur_youtube_v1.76.pyw
+    - telechargeur_youtube_v1.77.pyw
     - auth_support.py
     - test_auth_support.py
     - yt-dlp.exe
@@ -116,6 +117,15 @@ VERSION_1_76_CHANGE:
     Cookie contents are never copied, logged, committed, or bundled.
   - Added test_auth_support.py. Run: py -3.13 -m unittest -v test_auth_support.py
   - Added cookies*.txt to .gitignore.
+
+VERSION_1_77_CHANGE:
+  - Added a manual last-resort Chrome cookies.txt export path in the authentication assistant.
+  - The user must explicitly confirm before the application opens the Chrome Web Store page for
+    "Get cookies.txt LOCALLY", the extension cited by the yt-dlp FAQ.
+  - The dialog warns that cookies.txt is sensitive, must not be used on a public/shared/professional
+    computer, and that Firefox remains the recommended automatic method.
+  - No browser cookie is exported, read, copied, logged, or stored by the application; the user
+    returns to the existing file picker after exporting a Netscape-format file manually.
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc
