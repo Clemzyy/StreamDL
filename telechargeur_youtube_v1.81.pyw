@@ -692,7 +692,7 @@ class AuthenticationAssistant(tk.Toplevel):
         if not folder:
             messagebox.showinfo(
                 "Dossier Chrome non détecté",
-                "Le dossier de téléchargement configuré dans Chrome n'a pas été détecté. "
+                "Ni le dossier configuré dans Chrome ni le dossier Téléchargements Windows n'ont été détectés. "
                 "Après l'export, utilisez « Choisir un fichier cookies.txt » pour sélectionner "
                 "manuellement le fichier téléchargé.",
                 parent=self,

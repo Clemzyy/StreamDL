@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.80.pyw
+  current_source: telechargeur_youtube_v1.81.pyw
   current_app_label: "Téléchargeur Vidéo V7.3 by Clemzy"
-  next_source_version: "1.81"
+  next_source_version: "1.82"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite."
 
 USER_PREFERENCES:
@@ -34,8 +34,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.78.pyw: copie temporaire cookies YouTube filtrée et suppression source optionnelle
     - telechargeur_youtube_v1.79.pyw: Deno local pour les défis JavaScript YouTube
     - telechargeur_youtube_v1.80.pyw: option SHA-256 et aide export Chrome guidée
+    - telechargeur_youtube_v1.81.pyw: repli automatique vers Téléchargements Windows
   files_expected:
-    - telechargeur_youtube_v1.80.pyw
+    - telechargeur_youtube_v1.81.pyw
     - auth_support.py
     - test_auth_support.py
     - yt-dlp.exe
@@ -156,6 +157,10 @@ VERSION_1_80_CHANGE:
     Get cookies.txt LOCALLY extension, then select the downloaded file.
   - Added a button that reads only Chrome's configured download-directory preference and opens that
     folder. It never reads cookies or browser history.
+
+VERSION_1_81_CHANGE:
+  - When Chrome has no explicit download.default_directory setting, the Chrome-download button now
+    opens Windows' Downloads known folder instead, including a folder redirected by OneDrive.
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc

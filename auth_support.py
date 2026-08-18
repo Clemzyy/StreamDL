@@ -232,22 +232,41 @@ def find_chrome_download_folder(
             Path(local_app_data) / "Google" / "Chrome" / "User Data"
         )
 
-    if not chrome_user_data_directory.is_dir():
-        return None
+    if chrome_user_data_directory.is_dir():
+        profiles = [chrome_user_data_directory / "Default"]
+        profiles.extend(sorted(chrome_user_data_directory.glob("Profile *")))
+        for profile in profiles:
+            preferences_path = profile / "Preferences"
+            try:
+                data = json.loads(preferences_path.read_text(encoding="utf-8"))
+                folder = data.get("download", {}).get("default_directory")
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
 
-    profiles = [chrome_user_data_directory / "Default"]
-    profiles.extend(sorted(chrome_user_data_directory.glob("Profile *")))
-    for profile in profiles:
-        preferences_path = profile / "Preferences"
-        try:
-            data = json.loads(preferences_path.read_text(encoding="utf-8"))
-            folder = data.get("download", {}).get("default_directory")
-        except (OSError, ValueError, TypeError, AttributeError):
-            continue
+            if isinstance(folder, str) and folder and os.path.isdir(folder):
+                return folder
 
-        if isinstance(folder, str) and folder and os.path.isdir(folder):
-            return folder
-    return None
+    # Chrome omits default_directory when it uses the Windows Downloads known
+    # folder. Resolve the known-folder registry value first, including a folder
+    # redirected by OneDrive; then use the conventional path as a fallback.
+    try:
+        import winreg  # Windows-only application
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            downloads, _ = winreg.QueryValueEx(
+                key, "{374DE290-123F-4565-9164-39C4925E467B}"
+            )
+        resolved = os.path.expandvars(downloads)
+        if os.path.isdir(resolved):
+            return resolved
+    except (ImportError, OSError, TypeError):
+        pass
+
+    conventional = Path.home() / "Downloads"
+    return str(conventional) if conventional.is_dir() else None
 
 
 def validate_netscape_cookie_file(file_path: str) -> tuple[bool, str]:
