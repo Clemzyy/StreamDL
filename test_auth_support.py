@@ -1,6 +1,8 @@
+import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from auth_support import (
     AuthErrorDetector,
@@ -9,6 +11,7 @@ from auth_support import (
     CookieSource,
     create_youtube_only_cookie_copy,
     delete_temporary_cookie_file,
+    find_chrome_download_folder,
     sanitize_technical_text,
     validate_netscape_cookie_file,
 )
@@ -129,6 +132,24 @@ class CookiePreferenceTests(unittest.TestCase):
                     os.environ.pop("LOCALAPPDATA", None)
                 else:
                     os.environ["LOCALAPPDATA"] = original
+
+
+class ChromeDownloadFolderTests(unittest.TestCase):
+    def test_configured_download_folder_is_found_without_reading_cookies(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            user_data = Path(temporary_directory) / "User Data"
+            profile = user_data / "Default"
+            downloads = Path(temporary_directory) / "Téléchargements Chrome"
+            profile.mkdir(parents=True)
+            downloads.mkdir()
+            (profile / "Preferences").write_text(
+                json.dumps({"download": {"default_directory": str(downloads)}}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                find_chrome_download_folder(user_data),
+                str(downloads),
+            )
 
 if __name__ == "__main__":
     unittest.main()

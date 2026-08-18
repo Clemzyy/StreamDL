@@ -20,6 +20,7 @@ from auth_support import (
     CookieSourceKind,
     create_youtube_only_cookie_copy,
     delete_temporary_cookie_file,
+    find_chrome_download_folder,
     find_firefox,
     sanitize_technical_text,
     validate_netscape_cookie_file,
@@ -508,8 +509,8 @@ class AuthenticationAssistant(tk.Toplevel):
         self.details_visible = False
 
         self.title("Aide à l'authentification")
-        self.geometry("620x445")
-        self.minsize(560, 390)
+        self.geometry("620x500")
+        self.minsize(560, 445)
         self.resizable(True, True)
         apply_app_icon(self)
         self.transient(parent)
@@ -567,13 +568,6 @@ class AuthenticationAssistant(tk.Toplevel):
 
         tk.Button(
             action_frame,
-            text="Choisir un fichier cookies.txt",
-            command=self.choose_cookie_file,
-            anchor="w",
-        ).pack(fill="x", pady=(0, 7), ipady=4)
-
-        tk.Button(
-            action_frame,
             text="Exporter un cookies.txt depuis Chrome (méthode manuelle)",
             command=self.open_chrome_cookie_export_help,
             anchor="w",
@@ -581,14 +575,29 @@ class AuthenticationAssistant(tk.Toplevel):
         tk.Label(
             action_frame,
             text=(
-                "Solution de dernier recours : préférez Firefox si possible. "
-                "N'utilisez cette méthode que sur votre ordinateur personnel."
+                "Étapes : installez l'extension, cliquez sur « Export All Cookies », ouvrez le "
+                "dossier de téléchargement Chrome ci-dessous, puis choisissez le fichier. "
+                "Préférez Firefox si possible et n'utilisez cette méthode que sur votre ordinateur personnel."
             ),
             fg="#8A5200",
             anchor="w",
             justify="left",
             wraplength=555,
         ).pack(fill="x", padx=4, pady=(0, 10))
+
+        tk.Button(
+            action_frame,
+            text="Ouvrir le dossier de téléchargement Chrome",
+            command=self.open_chrome_download_folder,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 7), ipady=2)
+
+        tk.Button(
+            action_frame,
+            text="Choisir un fichier cookies.txt",
+            command=self.choose_cookie_file,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 7), ipady=4)
 
         if self.remembered_cookie_path and os.path.isfile(self.remembered_cookie_path):
             tk.Button(
@@ -649,8 +658,12 @@ class AuthenticationAssistant(tk.Toplevel):
             "Ne l'utilisez pas sur un ordinateur public, partagé ou professionnel, et ne "
             "transmettez jamais le fichier à quelqu'un.\n\n"
             "Le navigateur va ouvrir la page Chrome Web Store de « Get cookies.txt LOCALLY », "
-            "citée par la FAQ de yt-dlp. Après l'export au format Netscape cookies.txt, revenez "
-            "ici et choisissez le fichier créé.",
+            "citée par la FAQ de yt-dlp.\n\n"
+            "Après son installation, ouvrez l'extension dans Chrome et cliquez sur le grand bouton "
+            "bleu « Export All Cookies ». Chrome enregistrera le fichier dans son dossier de "
+            "téléchargement. Utilisez ensuite le bouton « Ouvrir le dossier de téléchargement Chrome » "
+            "dans cette fenêtre, puis choisissez le fichier créé ici. Le logiciel en utilisera "
+            "uniquement une copie temporaire limitée à YouTube.",
             parent=self,
         )
         if not should_open:
@@ -674,11 +687,24 @@ class AuthenticationAssistant(tk.Toplevel):
                 parent=self,
             )
 
+    def open_chrome_download_folder(self):
+        folder = find_chrome_download_folder()
+        if not folder:
+            messagebox.showinfo(
+                "Dossier Chrome non détecté",
+                "Le dossier de téléchargement configuré dans Chrome n'a pas été détecté. "
+                "Après l'export, utilisez « Choisir un fichier cookies.txt » pour sélectionner "
+                "manuellement le fichier téléchargé.",
+                parent=self,
+            )
+            return
+        open_folder(folder)
+
     def toggle_details(self):
         if self.details_visible:
             self.details_box.destroy()
             self.details_visible = False
-            self.geometry("620x445")
+            self.geometry("620x500")
             return
 
         source = self.error_info.cookie_source.label()
@@ -690,9 +716,10 @@ class AuthenticationAssistant(tk.Toplevel):
             "Firefox est recommandé : il évite souvent les limites des navigateurs Chromium sous Windows. "
             "Vous pouvez aussi sélectionner un fichier Netscape cookies.txt. En dernier recours, le bouton "
             "« Exporter un cookies.txt depuis Chrome » ouvre une extension citée par la FAQ officielle de yt-dlp. "
-            "Installez-la uniquement sur un ordinateur personnel, exportez le fichier au format Netscape, puis "
-            "sélectionnez-le ici. Un cookies.txt peut contenir des sessions de plusieurs sites : ne le partagez pas, "
-            "et évitez de mémoriser son emplacement sur un ordinateur partagé.\n\n"
+            "Installez-la uniquement sur un ordinateur personnel. Dans l'extension, cliquez sur « Export All Cookies », "
+            "ouvrez ensuite le dossier de téléchargement Chrome avec le bouton prévu, puis sélectionnez le fichier ici. "
+            "Un cookies.txt peut contenir des sessions de plusieurs sites : ne le partagez pas, et évitez de mémoriser "
+            "son emplacement sur un ordinateur partagé.\n\n"
             "Chromium sous Windows\n"
             "Chrome et plusieurs navigateurs Chromium utilisent des protections comme DPAPI et App-Bound Encryption. "
             "Selon Windows et le navigateur, yt-dlp peut ne pas réussir à lire leurs cookies. Le logiciel ne désactive "
@@ -708,7 +735,7 @@ class AuthenticationAssistant(tk.Toplevel):
         self.details_box.insert("1.0", details)
         self.details_box.config(state="disabled")
         self.details_visible = True
-        self.geometry("620x650")
+        self.geometry("620x700")
 
 
 class App:
@@ -729,6 +756,7 @@ class App:
         self.delete_video_source_var = tk.BooleanVar(value=True)
         self.playlist_mode_var = tk.BooleanVar(value=False)
         self.cookies_browser_var = tk.StringVar(value="Aucun")
+        self.create_sha256_var = tk.BooleanVar(value=False)
 
         self.progress_percent_var = tk.StringVar(value="0.0 %")
         self.progress_speed_var = tk.StringVar(value="Vitesse : -")
@@ -975,6 +1003,12 @@ class App:
             width=10,
             command=self.choose_folder
         ).pack(side="left", padx=(8, 0))
+
+        tk.Checkbutton(
+            self.root,
+            text="Créer un fichier SHA-256 avec le téléchargement",
+            variable=self.create_sha256_var,
+        ).pack(fill="x", padx=12, pady=(6, 0))
 
         self.start_btn = ttk.Button(
             self.root,
@@ -2865,34 +2899,26 @@ class App:
         if (
             main_file
             and os.path.isfile(main_file)
+            and self.create_sha256_var.get()
         ):
-            do_hash = messagebox.askyesno(
-                "SHA-256",
-                "Veux-tu calculer le hash "
-                "SHA-256 du fichier téléchargé ?\n\n"
-                "Cela peut être utile "
-                "pour ton dossier de preuve."
+            self.set_status(
+                "Calcul du SHA-256 en cours..."
             )
 
-            if do_hash:
-                self.set_status(
-                    "Calcul du SHA-256 en cours..."
-                )
+            self.append_log(
+                "Création du fichier SHA-256 demandée par l'option principale."
+            )
 
-                self.append_log(
-                    "Calcul du SHA-256 demandé."
-                )
+            self.start_btn.config(state="disabled")
+            self.choose_format_btn.config(state="disabled")
 
-                self.start_btn.config(state="disabled")
-                self.choose_format_btn.config(state="disabled")
+            threading.Thread(
+                target=self.hash_worker,
+                args=(main_file, folder),
+                daemon=True
+            ).start()
 
-                threading.Thread(
-                    target=self.hash_worker,
-                    args=(main_file, folder),
-                    daemon=True
-                ).start()
-
-                return
+            return
 
         open_folder(folder)
 

@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.79.pyw
+  current_source: telechargeur_youtube_v1.80.pyw
   current_app_label: "Téléchargeur Vidéo V7.3 by Clemzy"
-  next_source_version: "1.80"
+  next_source_version: "1.81"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite."
 
 USER_PREFERENCES:
@@ -33,8 +33,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.77.pyw: guide d'export manuel Chrome cookies.txt
     - telechargeur_youtube_v1.78.pyw: copie temporaire cookies YouTube filtrée et suppression source optionnelle
     - telechargeur_youtube_v1.79.pyw: Deno local pour les défis JavaScript YouTube
+    - telechargeur_youtube_v1.80.pyw: option SHA-256 et aide export Chrome guidée
   files_expected:
-    - telechargeur_youtube_v1.79.pyw
+    - telechargeur_youtube_v1.80.pyw
     - auth_support.py
     - test_auth_support.py
     - yt-dlp.exe
@@ -147,6 +148,14 @@ VERSION_1_79_CHANGE:
   - find_js_runtime() now prioritizes bundled Deno, then Deno on PATH, then legacy Node support.
   - This enables yt-dlp's current YouTube JavaScript challenge solving without a separate Deno
     installation or PATH modification. Deno MIT license is included in DENO_LICENSE.md.
+
+VERSION_1_80_CHANGE:
+  - Replaced the post-download SHA-256 question with an unchecked main-window checkbox that creates
+    the sidecar .sha256.txt file automatically when selected.
+  - The Chrome export assistant now explicitly instructs users to click "Export All Cookies" in the
+    Get cookies.txt LOCALLY extension, then select the downloaded file.
+  - Added a button that reads only Chrome's configured download-directory preference and opens that
+    folder. It never reads cookies or browser history.
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc

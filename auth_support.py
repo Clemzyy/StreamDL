@@ -215,6 +215,41 @@ def find_firefox() -> Optional[str]:
     return None
 
 
+def find_chrome_download_folder(
+    chrome_user_data_directory: Optional[Path] = None,
+) -> Optional[str]:
+    """Return Chrome's configured existing download folder without reading cookies.
+
+    Chrome records this preference separately for each profile. Only the
+    download directory setting is read; no history, account information, or
+    cookie value is inspected.
+    """
+    if chrome_user_data_directory is None:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            return None
+        chrome_user_data_directory = (
+            Path(local_app_data) / "Google" / "Chrome" / "User Data"
+        )
+
+    if not chrome_user_data_directory.is_dir():
+        return None
+
+    profiles = [chrome_user_data_directory / "Default"]
+    profiles.extend(sorted(chrome_user_data_directory.glob("Profile *")))
+    for profile in profiles:
+        preferences_path = profile / "Preferences"
+        try:
+            data = json.loads(preferences_path.read_text(encoding="utf-8"))
+            folder = data.get("download", {}).get("default_directory")
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+
+        if isinstance(folder, str) and folder and os.path.isdir(folder):
+            return folder
+    return None
+
+
 def validate_netscape_cookie_file(file_path: str) -> tuple[bool, str]:
     """Check only the structure, never expose or store the cookie contents."""
     try:
