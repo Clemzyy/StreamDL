@@ -32,6 +32,9 @@ from ytdlp_updater import (
 
 PROJECT_DIR = Path(__file__).resolve().parent
 EXE_NAME = "StreamDL"
+# Outside OneDrive: it marks synced folders read-only, which makes the
+# PyInstaller --clean step fail, and the 100+ MB intermediates need no sync.
+WORK_DIR = Path(tempfile.gettempdir()) / "StreamDL-build"
 BUNDLED_FILES = (
     "yt-dlp.exe",
     "ffmpeg.exe",
@@ -97,8 +100,8 @@ def main() -> None:
         "--noconfirm",
         "--icon", str(PROJECT_DIR / "download.ico"),
         "--distpath", str(PROJECT_DIR / "dist"),
-        "--workpath", str(PROJECT_DIR / "build"),
-        "--specpath", str(PROJECT_DIR / "build"),
+        "--workpath", str(WORK_DIR),
+        "--specpath", str(WORK_DIR),
     ]
     for data_file in data_files:
         arguments += ["--add-data", f"{data_file}{os.pathsep}."]

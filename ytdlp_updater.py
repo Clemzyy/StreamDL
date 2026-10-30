@@ -168,7 +168,7 @@ def read_exe_version(exe_path: str, timeout: float = 90) -> Optional[str]:
 
 def find_installed_copies(storage_dir: Path) -> list[YtDlpCopy]:
     """Managed copies, newest first. Partial downloads are never listed."""
-    copies = []
+    copies: list[YtDlpCopy] = []
     try:
         entries = list(storage_dir.iterdir())
     except OSError:

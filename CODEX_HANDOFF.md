@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.82.pyw
+  current_source: telechargeur_youtube_v1.83.pyw
   current_app_label: "Téléchargeur Vidéo V7.3 by Clemzy"
-  next_source_version: "1.83"
+  next_source_version: "1.84"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py -> dist\\StreamDL.exe"
 
 USER_PREFERENCES:
@@ -36,8 +36,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.80.pyw: option SHA-256 et aide export Chrome guidée
     - telechargeur_youtube_v1.81.pyw: repli automatique vers Téléchargements Windows
     - telechargeur_youtube_v1.82.pyw: mise à jour automatique de yt-dlp, icône GitHub, build portable
+    - telechargeur_youtube_v1.83.pyw: messages d'erreur des workers qui ne bloquent plus l'interface
   files_expected:
-    - telechargeur_youtube_v1.82.pyw
+    - telechargeur_youtube_v1.83.pyw
     - auth_support.py
     - test_auth_support.py
     - ytdlp_updater.py
@@ -180,6 +181,13 @@ VERSION_1_82_CHANGE:
   - Added build_exe.py: refreshes the project yt-dlp.exe to the latest verified release, then
     builds a single-file windowed dist\StreamDL.exe bundling yt-dlp, ffmpeg, Deno, icons, licenses.
   - Tests: py -3.13 -m unittest -v test_ytdlp_updater.py test_auth_support.py
+
+VERSION_1_83_CHANGE:
+  - Fixed a bug present since at least v1.81: fetch_formats_worker, download_worker and
+    hash_worker passed `lambda: ...str(e)` to root.after(). Python clears `e` when the except
+    block ends, so the callback raised NameError: no error dialog, buttons left disabled.
+    The message is now captured in error_text before scheduling the callback.
+  - ruff and mypy are clean on the project Python files.
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc

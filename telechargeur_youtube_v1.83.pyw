@@ -2443,9 +2443,12 @@ class App:
             )
 
         except Exception as e:
+            # Python clears `e` at the end of the except block, before the
+            # Tk callback runs: the message must be captured now.
+            error_text = str(e)
             self.root.after(
                 0,
-                lambda: self.on_fetch_error(str(e), cookie_source, -1)
+                lambda: self.on_fetch_error(error_text, cookie_source, -1)
             )
 
     def show_format_dialog(
@@ -2925,9 +2928,10 @@ class App:
                 )
 
         except Exception as e:
+            error_text = str(e)
             self.root.after(
                 0,
-                lambda: self.on_download_error(str(e), cookie_source, -1)
+                lambda: self.on_download_error(error_text, cookie_source, -1)
             )
 
     def handle_authentication_error(self, error_text, cookie_source, returncode):
@@ -3086,11 +3090,12 @@ class App:
             )
 
         except Exception as e:
+            error_text = str(e)
             self.root.after(
                 0,
                 lambda: self.on_hash_error(
                     folder,
-                    str(e)
+                    error_text
                 )
             )
 
