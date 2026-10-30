@@ -8,10 +8,10 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.81.pyw
+  current_source: telechargeur_youtube_v1.82.pyw
   current_app_label: "Téléchargeur Vidéo V7.3 by Clemzy"
-  next_source_version: "1.82"
-  executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite."
+  next_source_version: "1.83"
+  executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py -> dist\\StreamDL.exe"
 
 USER_PREFERENCES:
   - Répondre en français, ton direct et collaboratif.
@@ -35,10 +35,15 @@ REPO_STATE:
     - telechargeur_youtube_v1.79.pyw: Deno local pour les défis JavaScript YouTube
     - telechargeur_youtube_v1.80.pyw: option SHA-256 et aide export Chrome guidée
     - telechargeur_youtube_v1.81.pyw: repli automatique vers Téléchargements Windows
+    - telechargeur_youtube_v1.82.pyw: mise à jour automatique de yt-dlp, icône GitHub, build portable
   files_expected:
-    - telechargeur_youtube_v1.81.pyw
+    - telechargeur_youtube_v1.82.pyw
     - auth_support.py
     - test_auth_support.py
+    - ytdlp_updater.py
+    - test_ytdlp_updater.py
+    - build_exe.py
+    - social_github.png
     - yt-dlp.exe
     - deno.exe
     - DENO_LICENSE.md
@@ -71,8 +76,9 @@ FUNCTIONAL_HISTORY:
 CURRENT_IMPLEMENTATION:
   yt_dlp:
     executable: yt-dlp.exe
-    verified_version: 2026.07.04
-    location: same directory as source
+    verified_version: 2026.10.26
+    location: same directory as source (bundled in the exe)
+    auto_update: "ytdlp_updater.py; verified copies in %LOCALAPPDATA%\\StreamDL\\yt-dlp\\<version>\\yt-dlp.exe"
   javascript_runtime:
     implementation: find_js_runtime()
     preferred: deno.exe
@@ -161,6 +167,19 @@ VERSION_1_80_CHANGE:
 VERSION_1_81_CHANGE:
   - When Chrome has no explicit download.default_directory setting, the Chrome-download button now
     opens Windows' Downloads known folder instead, including a folder redirected by OneDrive.
+
+VERSION_1_82_CHANGE:
+  - Added ytdlp_updater.py. At each launch a background thread compares the bundled yt-dlp.exe
+    and managed copies with the latest stable release of github.com/yt-dlp/yt-dlp (API, with a
+    fallback to the releases/latest redirect when the anonymous API quota is exhausted).
+  - A newer yt-dlp.exe is downloaded into its own version folder, checked against the release's
+    SHA2-256SUMS, then checked with --version before use. Running downloads keep their copy;
+    superseded copies are removed best-effort. No UI blocking: the current copy works meanwhile.
+  - Status shown at the top-left of the window; details in the journal.
+  - Added the project GitHub icon (social_github.png, Octicons mark) at the far top right.
+  - Added build_exe.py: refreshes the project yt-dlp.exe to the latest verified release, then
+    builds a single-file windowed dist\StreamDL.exe bundling yt-dlp, ffmpeg, Deno, icons, licenses.
+  - Tests: py -3.13 -m unittest -v test_ytdlp_updater.py test_auth_support.py
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc

@@ -25,6 +25,15 @@ from auth_support import (
     sanitize_technical_text,
     validate_netscape_cookie_file,
 )
+from ytdlp_updater import (
+    default_storage_dir,
+    describe_error,
+    fetch_latest_release,
+    find_best_local_copy,
+    install_release,
+    is_newer_release,
+    remove_superseded_copies,
+)
 
 
 APP_TITLE = "Téléchargeur Vidéo V7.3 by Clemzy"
@@ -126,6 +135,11 @@ SOCIAL_LINKS = [
         "social_paypal.png",
         "https://www.paypal.com/donate/?hosted_button_id=NKCR6KK739WGS",
     ),
+    (
+        "GitHub du projet",
+        "social_github.png",
+        "https://github.com/Clemzyy/StreamDL",
+    ),
 ]
 
 PROGRESS_RE = re.compile(
@@ -151,12 +165,25 @@ def get_app_dir():
     return os.path.dirname(os.path.abspath(sys.argv[0]))
 
 
-def find_downloader():
+def find_bundled_downloader():
     for folder in (get_base_dir(), get_app_dir()):
         local_exe = os.path.join(folder, "yt-dlp.exe")
 
         if os.path.isfile(local_exe):
-            return [local_exe]
+            return local_exe
+
+    return None
+
+
+def find_downloader(preferred_path=None):
+    # The startup update check may select a newer verified copy stored in
+    # %LOCALAPPDATA%\StreamDL\yt-dlp instead of the bundled executable.
+    if preferred_path and os.path.isfile(preferred_path):
+        return [preferred_path]
+
+    bundled_exe = find_bundled_downloader()
+    if bundled_exe:
+        return [bundled_exe]
 
     if shutil.which("yt-dlp"):
         return ["yt-dlp"]
@@ -774,6 +801,10 @@ class App:
         self.pending_cookie_file_for_preference = None
         self.temporary_cookie_file_paths = set()
         self.last_auth_error_info = None
+        self.ytdlp_path = None
+        self.ytdlp_status_var = tk.StringVar(
+            value="yt-dlp : recherche de mise à jour..."
+        )
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_application_close)
 
@@ -794,12 +825,20 @@ class App:
         self.social_icon_images = []
 
         self.build_ui()
+        self.start_ytdlp_update_check()
 
     def build_ui(self):
         pad = {"padx": 12, "pady": 8}
 
         top_bar = tk.Frame(self.root)
         top_bar.pack(fill="x", padx=12, pady=(8, 2))
+
+        tk.Label(
+            top_bar,
+            textvariable=self.ytdlp_status_var,
+            fg="#666666",
+            anchor="w"
+        ).pack(side="left")
 
         links_frame = tk.Frame(top_bar)
         links_frame.pack(side="right")
@@ -1175,6 +1214,92 @@ class App:
 
     def append_log_threadsafe(self, text):
         self.root.after(0, lambda: self.append_log(text))
+
+    def set_ytdlp_status_threadsafe(self, text):
+        self.root.after(0, lambda: self.ytdlp_status_var.set(text))
+
+    def start_ytdlp_update_check(self):
+        threading.Thread(
+            target=self.ytdlp_update_worker,
+            daemon=True
+        ).start()
+
+    def ytdlp_update_worker(self):
+        # Runs at each launch: yt-dlp often needs a new release within days
+        # when YouTube changes. Downloads keep working with the current copy
+        # while the check or the update is in progress.
+        storage_dir = default_storage_dir()
+
+        try:
+            current = find_best_local_copy(
+                find_bundled_downloader(),
+                storage_dir
+            )
+        except Exception as e:
+            current = None
+            self.append_log_threadsafe(
+                f"Lecture de la version yt-dlp impossible : {e}"
+            )
+
+        if current:
+            self.ytdlp_path = current.path
+
+        current_label = (
+            current.version
+            if current and current.version
+            else "version inconnue"
+        )
+
+        try:
+            release = fetch_latest_release()
+
+        except Exception as e:
+            self.set_ytdlp_status_threadsafe(
+                f"yt-dlp {current_label} (mise à jour non vérifiée)"
+            )
+            self.append_log_threadsafe(
+                "Vérification des mises à jour yt-dlp impossible : "
+                + describe_error(e)
+            )
+            return
+
+        if not is_newer_release(release, current):
+            remove_superseded_copies(storage_dir, self.ytdlp_path)
+            self.set_ytdlp_status_threadsafe(
+                f"yt-dlp {current_label} (à jour)"
+            )
+            return
+
+        self.set_ytdlp_status_threadsafe(
+            f"yt-dlp : installation de la version {release.version}..."
+        )
+        self.append_log_threadsafe(
+            f"Nouvelle version de yt-dlp disponible : {release.version} "
+            f"(actuelle : {current_label}). Téléchargement depuis GitHub..."
+        )
+
+        try:
+            updated = install_release(release, storage_dir)
+
+        except Exception as e:
+            self.set_ytdlp_status_threadsafe(
+                f"yt-dlp {current_label} (mise à jour échouée)"
+            )
+            self.append_log_threadsafe(
+                "Mise à jour de yt-dlp impossible : " + describe_error(e)
+            )
+            return
+
+        self.ytdlp_path = updated.path
+        remove_superseded_copies(storage_dir, updated.path)
+
+        self.set_ytdlp_status_threadsafe(
+            f"yt-dlp {updated.version} (mis à jour)"
+        )
+        self.append_log_threadsafe(
+            f"yt-dlp mis à jour vers {updated.version} "
+            "(empreinte SHA-256 vérifiée)."
+        )
 
     def resize_history_columns(self, event):
         total_width = max(event.width - 8, 1)
@@ -2183,7 +2308,7 @@ class App:
 
     def fetch_formats_worker(self, url, playlist_mode, cookie_source):
         try:
-            downloader = find_downloader()
+            downloader = find_downloader(self.ytdlp_path)
 
             cmd = downloader + [
                 "-J",
@@ -2461,7 +2586,7 @@ class App:
         cookie_source
     ):
         try:
-            downloader = find_downloader()
+            downloader = find_downloader(self.ytdlp_path)
             ffmpeg_path = find_ffmpeg()
 
             format_string = (
