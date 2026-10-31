@@ -8,9 +8,9 @@ META:
   github_visibility: public
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\user\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.92.pyw
-  current_app_label: "StreamDL v1.92 (window title; APP_VERSION follows the source number)"
-  next_source_version: "1.93"
+  current_source: telechargeur_youtube_v1.93.pyw
+  current_app_label: "StreamDL v1.93 (window title; APP_VERSION follows the source number)"
+  next_source_version: "1.94"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -24,7 +24,7 @@ USER_PREFERENCES:
 
 REPO_STATE:
   verified_remote_before_1_92: "a4a2539 Read the link on paste and size HLS videos right"
-  current_release: "1.92; consulter git log pour l'identifiant du commit de publication"
+  current_release: "1.93; consulter git log pour l'identifiant du commit de publication"
   branch: main
   remote: https://github.com/Clemzyy/StreamDL.git
   source_history:
@@ -48,8 +48,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.90.pyw: retours d'un ami (clic droit, formats, tailles, historique, Opera GX), thème au clic droit
     - telechargeur_youtube_v1.91.pyw: lien analysé dès le collage, taille des vidéos HLS, icônes du mode sombre
     - telechargeur_youtube_v1.92.pyw: résultats yt-dlp explicites, playlists audio converties intégralement et erreurs de conversion signalées
+    - telechargeur_youtube_v1.93.pyw: icônes préchargées pour les deux thèmes, remplacement explicite de l'image ttk et logos sans disque clair dans les deux modes
   files_expected:
-    - telechargeur_youtube_v1.92.pyw
+    - telechargeur_youtube_v1.93.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
@@ -401,6 +402,24 @@ VERSION_1_92_CHANGE:
   - The pre-existing download.ico and download.png edits are preserved locally and
     used by the local build; they are excluded from the corrective source commit.
   - The user explicitly requested the light Nuitka build and push for this release.
+
+VERSION_1_93_CHANGE:
+  - Both GitHub PhotoImages (black for light, white for dark) are loaded at
+    startup with an explicit Tk master and retained for the entire session.
+    switch_theme() reuses them instead of re-reading PNG files. The ttk image
+    option is cleared then reassigned after the theme is rebuilt.
+  - The existing transparent social_*_dark.png logos are used on both themes
+    for TikTok, YouTube, PC32 and PayPal. Their translucent white background
+    discs no longer turn grey on a dark background. Original PNGs are preserved.
+  - Regression checks inspect the actual button image, GitHub pixel color and
+    background transparency for light/dark/light and dark/light/dark sequences,
+    including a switch with the PNG files unavailable. No new images are loaded
+    and the number of retained PhotoImages remains stable on repeated switches.
+  - The user requested the correction after screenshots of the compiled v1.92
+    showed stale icons. The light Nuitka EXE was visually checked for both
+    light/dark/light and dark/light/dark startup sequences: GitHub changes
+    black/white correctly and the other logos have no grey discs. Both test
+    sessions exited normally. Full suite: 193 passing tests; Ruff and Mypy clean.
 
 KNOWN_LIMITS:
   - HLS sizes remain estimates; source peak bitrates do not provide an exact file size.

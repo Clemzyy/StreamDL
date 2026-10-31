@@ -300,6 +300,60 @@ class ThemedIconTests(ErgonomicsTestCase):
         self.start_ready_app()
         self.assertTrue(APP.themed_asset("social_github.png").endswith("social_github.png"))
 
+    def image_of(self, icon_name):
+        button = dict(self.app.social_buttons)[icon_name]
+        return str(button.cget("image")[0])
+
+    def assert_icons_match(self, mode):
+        for _, icon_name, _ in APP.SOCIAL_LINKS:
+            self.assertEqual(
+                self.image_of(icon_name),
+                str(self.app.social_icon_cache[mode, icon_name])
+            )
+        github = self.image_of("social_github.png")
+        color = (255, 255, 255) if mode == "dark" else (0, 0, 0)
+        self.assertEqual(tuple(self.root.tk.call(github, "get", 16, 16)), color)
+
+    def test_displayed_icons_follow_light_dark_light_without_reading_files_again(self):
+        self.start_ready_app()
+        self.assert_icons_match("light")
+        count = len(self.app.social_icon_images)
+        # A packaged app must still switch after its startup resources are
+        # unavailable; checking themed_asset() alone did not test the widget.
+        with mock.patch.object(APP.tk, "PhotoImage", side_effect=AssertionError("image reloaded")), \
+                mock.patch.object(APP, "find_asset", return_value=None):
+            for mode in ("dark", "light", "dark", "light"):
+                self.app.switch_theme(mode)
+                self.root.update_idletasks()
+                self.assert_icons_match(mode)
+        self.assertEqual(len(self.app.social_icon_images), count)
+
+    def test_displayed_icons_follow_dark_light_dark(self):
+        with mock.patch.object(APP, "get_launcher_path", return_value="C:/Apps/StreamDL-sombre.exe"):
+            self.start_ready_app()
+        for mode in ("dark", "light", "dark"):
+            self.app.switch_theme(mode)
+            self.root.update_idletasks()
+            self.assert_icons_match(mode)
+
+    def test_displayed_logos_have_no_translucent_disc_in_either_theme(self):
+        from PIL import Image
+
+        self.start_ready_app()
+        for mode in ("light", "dark"):
+            self.app.switch_theme(mode)
+            for _, icon_name, _ in APP.SOCIAL_LINKS[:-1]:
+                with Image.open(build_exe.PROJECT_DIR / icon_name) as original:
+                    rgba = original.convert("RGBA")
+                    disc = [(x, y) for y in range(rgba.height) for x in range(rgba.width)
+                            if rgba.getpixel((x, y)) == (255, 255, 255, 51)]
+                self.assertTrue(disc)
+                image = self.image_of(icon_name)
+                self.assertTrue(all(
+                    self.root.tk.getboolean(self.root.tk.call(image, "transparency", "get", x, y))
+                    for x, y in disc
+                ), (mode, icon_name))
+
 
 def all_widgets(widget):
     found = [widget]

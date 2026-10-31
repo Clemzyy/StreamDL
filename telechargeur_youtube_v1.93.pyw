@@ -65,7 +65,7 @@ from tools_manager import (
 # through PATH; child processes such as yt-dlp inherit this setting.
 os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
-APP_VERSION = "1.92"
+APP_VERSION = "1.93"
 APP_TITLE = f"StreamDL v{APP_VERSION}"
 WINDOW_SIZE = "650x780"
 
@@ -570,9 +570,11 @@ def build_preview_text(info, playlist_mode):
     return " · ".join(str(part) for part in parts if part)
 
 
-def themed_asset(filename):
-    # A "<name>_dark" variant, when present, replaces the icon on the dark theme.
-    if palette["mode"] == "dark":
+def themed_asset(filename, mode=None):
+    # The non-GitHub dark variants are the same colored logos with their
+    # translucent white disc removed: use them on both backgrounds.
+    mode = mode or palette["mode"]
+    if mode == "dark" or filename != "social_github.png":
         stem, extension = os.path.splitext(filename)
         dark_path = find_asset(f"{stem}_dark{extension}")
         if dark_path:
@@ -1643,6 +1645,7 @@ class App:
 
         self.current_formats_list = []
         self.social_icon_images = []
+        self.social_icon_cache = {}
         self.social_buttons = []
         # yt-dlp's JSON for the last link read, shared by fetch_info() callers.
         self.analysis_lock = threading.Lock()
@@ -1650,6 +1653,7 @@ class App:
         self.analysis_after_id = None
 
         self.resolve_tools()
+        self.preload_social_icons()
         self.build_ui()
         bind_edit_menus(self.root, self.theme_menu_items)
         self.root.bind("<Button-3>", self.show_window_menu, add="+")
@@ -1669,6 +1673,32 @@ class App:
             300,
             self.start_tools_worker
         )
+
+    def preload_social_icons(self):
+        """Keep both themes' PhotoImages alive, without reloading on a switch."""
+        loaded = {}
+        for mode in ("light", "dark"):
+            for _, icon_name, _ in SOCIAL_LINKS:
+                path = themed_asset(icon_name, mode)
+                if not path:
+                    continue
+                if path not in loaded:
+                    try:
+                        image = tk.PhotoImage(master=self.root, file=path)
+                    except (tk.TclError, OSError):
+                        continue
+                    loaded[path] = image
+                    self.social_icon_images.append(image)
+                self.social_icon_cache[mode, icon_name] = loaded[path]
+
+    def refresh_social_icons(self):
+        for icon_name, button in self.social_buttons:
+            image = self.social_icon_cache.get((palette["mode"], icon_name))
+            if image is not None:
+                # Reset ttk's image option after rebuilding the theme so it
+                # cannot retain the previous theme's rendered image.
+                button.configure(image="")
+                button.configure(image=image, text="")
 
     def build_ui(self):
         block_padding = (12, 4, 12, 10)
@@ -1694,16 +1724,7 @@ class App:
         links_frame.pack(side="right")
 
         for label, icon_name, url in SOCIAL_LINKS:
-            icon_path = themed_asset(icon_name)
-            icon_image = None
-
-            if icon_path:
-                try:
-                    icon_image = tk.PhotoImage(file=icon_path)
-                    self.social_icon_images.append(icon_image)
-
-                except Exception:
-                    icon_image = None
+            icon_image = self.social_icon_cache.get((palette["mode"], icon_name))
 
             link_options = (
                 {"image": icon_image}
@@ -1719,8 +1740,7 @@ class App:
             )
             link_button.pack(side="left", padx=(2, 0))
 
-            if icon_image:
-                self.social_buttons.append((icon_name, link_button))
+            self.social_buttons.append((icon_name, link_button))
 
         # ---- Vidéo: what to download.
         video_block = ttk.LabelFrame(
@@ -2828,17 +2848,7 @@ class App:
         )
         self.log_box.tag_configure("detail", foreground=palette["detail"])
 
-        # The GitHub icon has a light version for the dark theme.
-        for icon_name, button in self.social_buttons:
-            icon_path = themed_asset(icon_name)
-
-            try:
-                icon_image = tk.PhotoImage(file=icon_path)
-            except (tk.TclError, TypeError):
-                continue
-
-            self.social_icon_images.append(icon_image)
-            button.configure(image=icon_image)
+        self.refresh_social_icons()
 
         use_dark_title_bar(self.root, palette["mode"] == "dark")
         self.settings.set("theme", palette["mode"])
