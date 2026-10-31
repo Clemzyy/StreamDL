@@ -5,12 +5,12 @@ META:
   project: Stream Video Downloader / StreamDL
   owner: Clemzy
   github: https://github.com/Clemzyy/StreamDL
-  github_visibility: private
+  github_visibility: public
   git_identity: "Clemzy <troisquarks@proton.me>"
-  workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.91.pyw
-  current_app_label: "StreamDL v1.91 (window title; APP_VERSION follows the source number)"
-  next_source_version: "1.92"
+  workspace: "C:\Users\user\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
+  current_source: telechargeur_youtube_v1.92.pyw
+  current_app_label: "StreamDL v1.92 (window title; APP_VERSION follows the source number)"
+  next_source_version: "1.93"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -20,9 +20,11 @@ USER_PREFERENCES:
   - Ne pas écraser les modifications utilisateur non liées.
   - Conserver les icônes sociales fournies dont les noms commencent par social_*.png.
   - Ne pas intégrer de cookies YouTube partagés dans le logiciel ou l'exécutable.
+  - Commits avec l'identité Git du propriétaire uniquement, sans Co-authored-by ni attribution à une IA.
 
 REPO_STATE:
-  last_pushed_commit: "7d8ca90 Handle YouTube authentication errors"
+  verified_remote_before_1_92: "a4a2539 Read the link on paste and size HLS videos right"
+  current_release: "1.92; consulter git log pour l'identifiant du commit de publication"
   branch: main
   remote: https://github.com/Clemzyy/StreamDL.git
   source_history:
@@ -45,8 +47,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.89.pyw: yt-dlp en version dossier, téléchargement depuis le JSON de l'aperçu
     - telechargeur_youtube_v1.90.pyw: retours d'un ami (clic droit, formats, tailles, historique, Opera GX), thème au clic droit
     - telechargeur_youtube_v1.91.pyw: lien analysé dès le collage, taille des vidéos HLS, icônes du mode sombre
+    - telechargeur_youtube_v1.92.pyw: résultats yt-dlp explicites, playlists audio converties intégralement et erreurs de conversion signalées
   files_expected:
-    - telechargeur_youtube_v1.91.pyw
+    - telechargeur_youtube_v1.92.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
@@ -55,6 +58,7 @@ REPO_STATE:
     - test_build_exe.py
     - test_app_ergonomics.py
     - test_app_presentation.py
+    - test_download_results.py
     - social_github_dark.png (light GitHub mark used on the dark theme)
     - build_exe.py
     - social_github.png
@@ -99,13 +103,14 @@ CURRENT_IMPLEMENTATION:
     local_environment: "Deno beside the source for development; managed copy for the light exe"
     command_option: "--js-runtimes deno:<path>"
   cookies_ui:
-    values: [Aucun, Chrome, Edge, Firefox, Brave, Opera]
+    values: [Aucun, Chrome, Edge, Firefox, Brave, Opera, Opera GX]
     mapping:
       Chrome: chrome
       Edge: edge
       Firefox: firefox
       Brave: brave
       Opera: opera
+      Opera GX: "opera:<APPDATA>\\Opera Software\\Opera GX Stable"
     current_behavior: "--cookies-from-browser <browser>"
   ffmpeg:
     detection: "packaged exe: embedded (--full) then verified managed copy; source run: source folder, managed copy, then PATH (.exe only)"
@@ -372,17 +377,36 @@ RECENT_TEST_VIDEO:
   observed_formats: "Only m3u8 formats 91-96; format 96 is 1080p around 5.4 Mbit/s."
   implication: "Slow download can be normal for this HLS source; ffmpeg is required."
 
-NEXT_RECOMMENDED_FEATURE:
-  version: 1.76
-  feature: "Import local cookies.txt"
-  expected_ui: "Button/file picker near Cookies YouTube; option Aucun remains default."
-  yt_dlp_argument: "--cookies <selected_path>"
-  security:
-    - Do not copy or upload the file.
-    - Do not add cookies*.txt to Git.
-    - Add cookies*.txt to .gitignore if implementing the feature.
-    - Keep raw cookie contents out of journal and error dialogs.
-  error_handling: "If no cookie file is selected, preserve current browser-cookie behavior."
+VERSION_1_92_CHANGE:
+  - yt-dlp reports each final media path with --print after_move:STREAMDL_FILE:%(filepath)j;
+    --no-simulate, --progress and --no-quiet preserve downloading, progress and the
+    destination lines needed to clean up cancelled downloads. Final paths are
+    parsed as JSON, deduplicated and confined to the chosen destination. No before/after
+    scan of the destination: existing files are detected, unrelated files are left alone.
+  - Every item of an audio or video playlist receives the chosen conversion. History
+    records each actual result, including original files when a conversion fails.
+  - Failed conversions preserve the source, remove the incomplete conversion output
+    and produce a visible warning instead of an unconditional green success. The
+    warning remains visible after an optional SHA-256 calculation.
+  - UI callbacks are guarded during closure and pending Tk callbacks are cancelled;
+    yt-dlp and ffmpeg output streams are closed explicitly.
+  - Optional sv-ttk typing and the optional PyInstaller import pass Mypy. Image tests
+    no longer call Pillow's deprecated getdata API.
+  - Checks: py -3.13 -m unittest discover -v (190 tests), ruff check .,
+    mypy auth_support.py tools_manager.py build_exe.py telechargeur_youtube_v1.92.pyw.
+  - Real-tool integration on local HTTP fixtures: MP4 with SHA-256, a second
+    download of the existing MP4 with SHA-256, two playlist items converted
+    to MP3, history and progress. Real yt-dlp cancellation also removes its
+    partial output while preserving an unrelated file in the same folder.
+  - The pre-existing download.ico and download.png edits are preserved locally and
+    used by the local build; they are excluded from the corrective source commit.
+  - The user explicitly requested the light Nuitka build and push for this release.
+
+KNOWN_LIMITS:
+  - HLS sizes remain estimates; source peak bitrates do not provide an exact file size.
+  - Opera GX cookie extraction has not been tested on an installed Opera GX browser.
+  - The optional SHA-256 sidecar covers the main file of a playlist.
+  - The Windows executable is not digitally signed.
 
 WORKFLOW:
   - Inspect git status before edits.

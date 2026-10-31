@@ -11,10 +11,12 @@ import tempfile
 import time
 import webbrowser
 import ctypes
+from types import ModuleType
 from dataclasses import replace
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+sv_ttk: ModuleType | None
 try:
     import sv_ttk
 except ImportError:
@@ -63,7 +65,7 @@ from tools_manager import (
 # through PATH; child processes such as yt-dlp inherit this setting.
 os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
-APP_VERSION = "1.91"
+APP_VERSION = "1.92"
 APP_TITLE = f"StreamDL v{APP_VERSION}"
 WINDOW_SIZE = "650x780"
 
@@ -172,6 +174,9 @@ HLS_DEFAULT_FACTOR = 0.5
 LINK_ANALYSIS_DELAY_MS = 700
 # The links in yt-dlp's JSON expire after a few hours.
 LINK_ANALYSIS_MAX_AGE = 30 * 60
+
+# yt-dlp reports the final path, even when the file already existed.
+DOWNLOADED_FILE_PREFIX = "STREAMDL_FILE:"
 
 # Kinds of the format dialog's custom choice, in display order.
 FORMAT_KINDS = (
@@ -1050,6 +1055,34 @@ def clean_filename_title(title):
     return cleaned or "video"
 
 
+def reported_download_files(output_text, folder):
+    """Final media paths reported by yt-dlp, confined to the chosen folder.
+
+    Scanning for new files misses existing downloads and can mistake a file
+    written by another application for one of ours.
+    """
+    destination = os.path.normcase(os.path.realpath(folder))
+    files = []
+    seen = set()
+    for line in output_text.splitlines():
+        if not line.startswith(DOWNLOADED_FILE_PREFIX):
+            continue
+        try:
+            path = json.loads(line[len(DOWNLOADED_FILE_PREFIX):])
+            if not isinstance(path, str) or not path:
+                continue
+            path = os.path.abspath(path)
+            resolved = os.path.normcase(os.path.realpath(path))
+            if os.path.commonpath([destination, resolved]) != destination:
+                continue
+            if resolved not in seen and os.path.isfile(path):
+                seen.add(resolved)
+                files.append(path)
+        except (ValueError, OSError):
+            continue
+    return files
+
+
 def get_hidden_process_kwargs():
     kwargs = {
         "text": True,
@@ -1520,6 +1553,8 @@ class AuthenticationAssistant(tk.Toplevel):
 class App:
     def __init__(self, root):
         self.root = root
+        self.closing = False
+        self.result_warning = None
         # Built hidden and shown once complete: otherwise an empty window of
         # the default size shows first, then is rebuilt at its real size.
         show_when_ready = self.root.state() != "withdrawn"
@@ -1630,7 +1665,7 @@ class App:
             self.root.deiconify()
 
         # Started once the window is drawn, so it never delays the first paint.
-        self.tools_worker_after_id = self.root.after(
+        self.tools_worker_after_id = self.after_ui(
             300,
             self.start_tools_worker
         )
@@ -2096,8 +2131,22 @@ class App:
         self.log_box.see("end")
         self.log_box.config(state="disabled")
 
+    def after_ui(self, delay, callback):
+        """Do not queue or run UI callbacks once the window is closing."""
+        if self.closing:
+            return None
+
+        def apply():
+            if not self.closing:
+                callback()
+
+        try:
+            return self.root.after(delay, apply)
+        except (RuntimeError, tk.TclError):
+            return None
+
     def append_log_threadsafe(self, text, detail=False):
-        self.root.after(0, lambda: self.append_log(text, detail))
+        self.after_ui(0, lambda: self.append_log(text, detail))
 
     def toggle_details_visibility(self):
         self.log_box.tag_configure(
@@ -2147,7 +2196,7 @@ class App:
             self.tool_status[name] = text
             self.render_tools_status()
 
-        self.root.after(0, apply)
+        self.after_ui(0, apply)
 
     def set_tool_copy_threadsafe(self, spec, copy):
         def apply():
@@ -2156,7 +2205,7 @@ class App:
             self.render_tools_status()
             self.on_tools_changed()
 
-        self.root.after(0, apply)
+        self.after_ui(0, apply)
 
     def tools_ready_for_formats(self):
         return (
@@ -2260,7 +2309,7 @@ class App:
             )
 
         finally:
-            self.root.after(0, self.on_tools_worker_done)
+            self.after_ui(0, self.on_tools_worker_done)
 
     def on_tools_worker_done(self):
         self.tools_worker_running = False
@@ -2632,9 +2681,14 @@ class App:
             self.cleanup_temporary_cookie_source(CookieSource.file_source(temporary_path))
 
     def on_application_close(self):
-        self.root.after_cancel(self.tools_worker_after_id)
-        if self.analysis_after_id is not None:
-            self.root.after_cancel(self.analysis_after_id)
+        if self.closing:
+            return
+        self.closing = True
+        self.cancel_requested = True
+        # Also cancel callbacks already queued by worker threads. Otherwise
+        # Tcl may try to invoke their deleted commands after root.destroy().
+        for callback_id in self.root.tk.call("after", "info"):
+            self.root.after_cancel(callback_id)
         if self.current_process is not None:
             # A download left running would keep writing into the folder.
             kill_process_tree(self.current_process)
@@ -2933,7 +2987,7 @@ class App:
         self.log_box.config(state="disabled")
 
     def replace_progress_log_line_threadsafe(self, text):
-        self.root.after(
+        self.after_ui(
             0,
             lambda: self.replace_progress_log_line(text)
         )
@@ -2948,7 +3002,7 @@ class App:
         self.root.update_idletasks()
 
     def set_status_threadsafe(self, text):
-        self.root.after(0, lambda: self.set_status(text))
+        self.after_ui(0, lambda: self.set_status(text))
 
     def reset_progress(self):
         self.progress["value"] = 0
@@ -2991,13 +3045,13 @@ class App:
         self.progress_eta_var.set(f"ETA : {display_eta}")
 
     def set_progress_threadsafe(self, percent, speed="-", eta="-"):
-        self.root.after(
+        self.after_ui(
             0,
             lambda: self.set_progress(percent, speed, eta)
         )
 
     def mark_progress_done_threadsafe(self):
-        self.root.after(
+        self.after_ui(
             0,
             lambda: self.set_progress(100.0, "terminé", "0s")
         )
@@ -3036,6 +3090,9 @@ class App:
         now = time.time()
         stripped = line.strip()
         lower_line = line.lower()
+
+        if stripped.startswith(DOWNLOADED_FILE_PREFIX):
+            return
 
         for pattern in YTDLP_OUTPUT_RES:
             match = pattern.match(stripped)
@@ -3178,6 +3235,8 @@ class App:
             returncode = process.wait()
 
         finally:
+            if process.stdout is not None:
+                process.stdout.close()
             self.current_process = None
 
         output_text = "\n".join(collected_lines)
@@ -3320,31 +3379,6 @@ class App:
 
         return target_path
 
-    def choose_downloaded_media_files(self, new_files):
-        media_exts = {
-            ".mp4",
-            ".mkv",
-            ".webm",
-            ".m4a",
-            ".mp3",
-            ".wav",
-            ".flac",
-            ".avi",
-            ".mov",
-        }
-
-        existing = [
-            f for f in new_files
-            if (
-                os.path.isfile(f)
-                and os.path.splitext(f)[1].lower() in media_exts
-            )
-        ]
-
-        existing.sort(key=lambda path: path.lower())
-
-        return existing
-
     def convert_audio_file(self, input_file, output_format, ffmpeg_path):
         ext = output_format.lower()
 
@@ -3390,7 +3424,11 @@ class App:
 
         returncode = self.run_ffmpeg(cmd, output_file)
 
-        if returncode != 0:
+        if returncode != 0 or not os.path.isfile(output_file):
+            try:
+                os.remove(output_file)
+            except OSError:
+                pass
             raise RuntimeError(
                 f"Échec conversion {output_format}"
             )
@@ -3457,7 +3495,11 @@ class App:
 
         returncode = self.run_ffmpeg(cmd, output_file)
 
-        if returncode != 0:
+        if returncode != 0 or not os.path.isfile(output_file):
+            try:
+                os.remove(output_file)
+            except OSError:
+                pass
             raise RuntimeError(
                 f"Échec de la conversion {output_format}"
             )
@@ -3650,7 +3692,7 @@ class App:
         if self.analysis_after_id is not None:
             self.root.after_cancel(self.analysis_after_id)
 
-        self.analysis_after_id = self.root.after(
+        self.analysis_after_id = self.after_ui(
             LINK_ANALYSIS_DELAY_MS,
             self.start_link_analysis
         )
@@ -3687,7 +3729,7 @@ class App:
             # Quiet: the buttons explain what went wrong.
             text = ""
 
-        self.root.after(0, lambda: self.show_link_analysis(url, text))
+        self.after_ui(0, lambda: self.show_link_analysis(url, text))
 
     def show_link_analysis(self, url, text):
         # Another link may have been pasted meanwhile.
@@ -3703,7 +3745,7 @@ class App:
             if returncode != 0:
                 err = (stderr_text + "\n" + stdout_text).strip() or "Erreur inconnue"
 
-                self.root.after(
+                self.after_ui(
                     0,
                     lambda: self.on_fetch_error(err, cookie_source, returncode)
                 )
@@ -3716,7 +3758,7 @@ class App:
             # last links could expire before their turn comes.
             info_json = stdout_text if data.get("_type", "video") == "video" else None
             preview_text = build_preview_text(data, playlist_mode)
-            self.root.after(0, lambda: self.show_preview(preview_text))
+            self.after_ui(0, lambda: self.show_preview(preview_text))
 
             if playlist_mode and data.get("_type") == "playlist":
                 entries = data.get("entries") or []
@@ -3734,7 +3776,7 @@ class App:
             title = data.get("title", "(titre inconnu)")
             choices = format_choices(data)
 
-            self.root.after(
+            self.after_ui(
                 0,
                 lambda: self.show_format_dialog(
                     url,
@@ -3750,7 +3792,7 @@ class App:
             # Python clears `e` at the end of the except block, before the
             # Tk callback runs: the message must be captured now.
             error_text = str(e)
-            self.root.after(
+            self.after_ui(
                 0,
                 lambda: self.on_fetch_error(error_text, cookie_source, -1)
             )
@@ -3839,17 +3881,6 @@ class App:
             "Format choisi. Vérifie le dossier, puis clique sur « Lancer le téléchargement »."
         )
 
-    def list_files_recursive(self, folder):
-        found = []
-
-        for root_dir, _, files in os.walk(folder):
-            for name in files:
-                found.append(
-                    os.path.join(root_dir, name)
-                )
-
-        return set(found)
-
     def choose_main_downloaded_file(self, new_files):
         if not new_files:
             return None
@@ -3912,13 +3943,10 @@ class App:
         try:
             downloader = find_downloader(self.tool_path("yt-dlp"))
             ffmpeg_path = find_ffmpeg(self.tool_path("ffmpeg"))
-
             format_string = {
                 "BEST_AUTO": "bv*+ba/b",
                 "BEST_AUDIO": "ba/b",
             }.get(selected_format, selected_format)
-
-            before_files = self.list_files_recursive(folder)
 
             cmd = downloader + [
                 "--continue",
@@ -3926,336 +3954,140 @@ class App:
                 "--no-part",
                 "--windows-filenames",
                 "--newline",
+                # after_move runs for every finished item, including an
+                # existing file yt-dlp correctly skips downloading again.
+                "--print", f"after_move:{DOWNLOADED_FILE_PREFIX}%(filepath)j",
+                "--no-simulate",
+                "--progress",
+                "--no-quiet",
                 "-f", format_string,
-                "-o",
-                os.path.join(
-                    folder,
-                    "%(title)s.%(ext)s"
-                ),
+                "-o", os.path.join(folder, "%(title)s.%(ext)s"),
             ]
-
             if ffmpeg_path:
-                cmd.extend([
-                    "--ffmpeg-location",
-                    ffmpeg_path
-                ])
-
-            cmd.extend(
-                self.build_ytdlp_runtime_options(cookie_source)
-            )
-
+                cmd.extend(["--ffmpeg-location", ffmpeg_path])
+            cmd.extend(self.build_ytdlp_runtime_options(cookie_source))
             if selected_format == "BEST_AUTO" or "+" in selected_format:
-                cmd.extend([
-                    "--merge-output-format",
-                    "mp4"
-                ])
+                cmd.extend(["--merge-output-format", "mp4"])
 
-            self.set_status_threadsafe(
-                "Téléchargement en cours..."
-            )
-
-            returncode, output_text = (
-                self.run_download(cmd, url, info_json)
-            )
-
+            self.set_status_threadsafe("Téléchargement en cours...")
+            returncode, output_text = self.run_download(cmd, url, info_json)
             if self.cancel_requested:
                 self.finish_cancelled_download()
                 return
+            if returncode != 0:
+                error_text = (output_text or "Erreur inconnue").strip()
+                self.after_ui(
+                    0,
+                    lambda: self.on_download_error(error_text, cookie_source, returncode)
+                )
+                return
 
-            after_files = self.list_files_recursive(folder)
-
-            new_files = list(
-                after_files - before_files
-            )
-
-            media_files = self.choose_downloaded_media_files(
-                new_files
-            )
-
-            main_file = self.choose_main_downloaded_file(
-                new_files
-            )
-
-            converted_file = None
-
+            media_files = reported_download_files(output_text, folder)
+            if not media_files:
+                raise RuntimeError(
+                    "yt-dlp a terminé sans indiquer de fichier utilisable. "
+                    "Vérifie les détails techniques du journal."
+                )
+            main_file = self.choose_main_downloaded_file(media_files)
             is_audio_only = self.is_audio_only_format(
-                selected_format,
-                self.current_formats_list
+                selected_format, self.current_formats_list
             )
-
-            selected_conversion = (
+            conversion = (
                 self.audio_conversion_var.get()
+                if is_audio_only else self.video_conversion_var.get()
             )
-
-            selected_video_conversion = (
-                self.video_conversion_var.get()
+            delete_source = (
+                self.delete_audio_source_var.get()
+                if is_audio_only else self.delete_video_source_var.get()
             )
-
-            original_main_file = main_file
-            extra_history_files = []
-
-            if (
-                returncode == 0
-                and is_audio_only
-                and selected_conversion != "Aucune conversion"
-            ):
-                if (
-                    main_file
-                    and os.path.isfile(main_file)
-                    and ffmpeg_path
-                ):
-                    self.set_status_threadsafe(
-                        f"Conversion {selected_conversion}..."
-                    )
-
-                    self.append_log_threadsafe(
-                        f"Conversion audio vers "
-                        f"{selected_conversion}..."
-                    )
-
+            conversion_errors = []
+            results = []
+            # Keep the same main file as before, while processing every item
+            # of an audio playlist as well as every item of a video playlist.
+            ordered_files = [main_file] + [
+                path for path in media_files if path != main_file
+            ]
+            for source_file in ordered_files:
+                if self.cancel_requested:
+                    self.finish_cancelled_download()
+                    return
+                result_file = source_file
+                actual_conversion = "Aucune conversion"
+                if conversion != "Aucune conversion":
                     try:
-                        converted_file = (
-                            self.convert_audio_file(
-                                main_file,
-                                selected_conversion,
-                                ffmpeg_path
-                                )
+                        if not ffmpeg_path:
+                            raise RuntimeError("ffmpeg n'est pas disponible.")
+                        self.set_status_threadsafe(f"Conversion {conversion}...")
+                        converter = (
+                            self.convert_audio_file if is_audio_only
+                            else self.convert_video_file
                         )
-
+                        result_file = converter(source_file, conversion, ffmpeg_path)
+                        actual_conversion = conversion
+                        if self.cancel_requested:
+                            self.finish_cancelled_download()
+                            return
                         self.append_log_threadsafe(
-                            f"Conversion terminée : "
-                            f"{converted_file}"
+                            f"Conversion terminée : {result_file}"
                         )
-
-                        if self.delete_audio_source_var.get():
-                            try:
-                                os.remove(main_file)
-
-                                self.append_log_threadsafe(
-                                    "Fichier source supprimé : "
-                                    f"{main_file}"
-                                )
-
-                            except Exception:
-                                pass
-
-                        main_file = converted_file
-
-                    except Exception as e:
-                        self.append_log_threadsafe(
-                            f"Erreur conversion : {e}"
-                        )
-
-            if (
-                returncode == 0
-                and not is_audio_only
-                and selected_video_conversion != "Aucune conversion"
-            ):
-                if (
-                    main_file
-                    and os.path.isfile(main_file)
-                    and ffmpeg_path
-                ):
-                    self.set_status_threadsafe(
-                        f"Conversion vidéo {selected_video_conversion}..."
-                    )
-
-                    self.append_log_threadsafe(
-                        f"Conversion vidéo vers "
-                        f"{selected_video_conversion}..."
-                    )
-
-                    try:
-                        converted_file = (
-                            self.convert_video_file(
-                                main_file,
-                                selected_video_conversion,
-                                ffmpeg_path
-                            )
-                        )
-
-                        self.append_log_threadsafe(
-                            f"Conversion terminée : "
-                            f"{converted_file}"
-                        )
-
-                        if self.delete_video_source_var.get():
-                            try:
-                                os.remove(main_file)
-
-                                self.append_log_threadsafe(
-                                    f"Fichier source supprimé : "
-                                    f"{main_file}"
-                                )
-
-                            except Exception:
-                                pass
-
-                        main_file = converted_file
-
-                    except Exception as e:
-                        self.append_log_threadsafe(
-                            f"Erreur de conversion vidéo : {e}"
-                        )
-
-                elif not ffmpeg_path:
-                    self.append_log_threadsafe(
-                        "Conversion vidéo ignorée : ffmpeg non détecté."
-                    )
-
-            if (
-                returncode == 0
-                and playlist_mode
-                and not is_audio_only
-                and selected_video_conversion != "Aucune conversion"
-                and ffmpeg_path
-            ):
-                remaining_files = [
-                    path for path in media_files
-                    if path != original_main_file
-                ]
-
-                for source_file in remaining_files:
-                    if not os.path.isfile(source_file):
-                        continue
-
-                    try:
-                        converted_file = (
-                            self.convert_video_file(
-                                source_file,
-                                selected_video_conversion,
-                                ffmpeg_path
-                            )
-                        )
-
-                        extra_history_files.append(converted_file)
-
-                        self.append_log_threadsafe(
-                            f"Conversion terminée : "
-                            f"{converted_file}"
-                        )
-
-                        if self.delete_video_source_var.get():
+                        if delete_source:
                             try:
                                 os.remove(source_file)
-
                                 self.append_log_threadsafe(
-                                    f"Fichier source supprimé : "
-                                    f"{source_file}"
+                                    f"Fichier source supprimé : {source_file}"
                                 )
-
-                            except Exception:
-                                pass
-
-                    except Exception as e:
-                        self.append_log_threadsafe(
-                            f"Erreur de conversion vidéo : {e}"
+                            except OSError as exc:
+                                self.append_log_threadsafe(
+                                    f"Fichier source conservé : {exc}"
+                                )
+                    except Exception as exc:
+                        if self.cancel_requested:
+                            self.finish_cancelled_download()
+                            return
+                        result_file = source_file
+                        error = (
+                            f"{os.path.basename(source_file)} : "
+                            f"{sanitize_technical_text(str(exc))}"
                         )
+                        conversion_errors.append(error)
+                        self.append_log_threadsafe(f"Échec de conversion : {error}")
+
+                if not playlist_mode:
+                    try:
+                        result_file = self.rename_to_detected_title(
+                            result_file, detected_title, selected_format,
+                            actual_conversion, is_audio_only
+                        )
+                    except OSError as exc:
+                        self.append_log_threadsafe(f"Renommage impossible : {exc}")
+                results.append((
+                    result_file,
+                    "Aucune" if actual_conversion == "Aucune conversion"
+                    else actual_conversion
+                ))
 
             if self.cancel_requested:
-                # « Annuler » was used during a conversion.
                 self.finish_cancelled_download()
                 return
 
-            if returncode == 0:
-                rename_conversion = "Aucune conversion"
-
-                if (
-                    is_audio_only
-                    and selected_conversion != "Aucune conversion"
-                    and main_file != original_main_file
-                ):
-                    rename_conversion = selected_conversion
-
-                elif (
-                    not is_audio_only
-                    and selected_video_conversion != "Aucune conversion"
-                    and main_file != original_main_file
-                ):
-                    rename_conversion = selected_video_conversion
-
-                if not playlist_mode and main_file:
-                    try:
-                        main_file = self.rename_to_detected_title(
-                            main_file,
-                            detected_title,
-                            selected_format,
-                            rename_conversion,
-                            is_audio_only
-                        )
-
-                    except Exception as e:
-                        self.append_log_threadsafe(
-                            f"Renommage impossible : {e}"
-                        )
-
-                history_files = (
-                    ([main_file] if main_file else [])
-                    + extra_history_files
-                )
-
-                if (
-                    playlist_mode
-                    and (
-                        (
-                            is_audio_only
-                            and selected_conversion == "Aucune conversion"
-                        )
-                        or (
-                            not is_audio_only
-                            and selected_video_conversion == "Aucune conversion"
-                        )
-                    )
-                ):
-                    history_files = media_files
-
-                if not history_files:
-                    history_files = media_files
-
-                conversion_label = "Aucune"
-
-                if is_audio_only:
-                    if selected_conversion != "Aucune conversion":
-                        conversion_label = selected_conversion
-
-                elif selected_video_conversion != "Aucune conversion":
-                    conversion_label = selected_video_conversion
-
-                for history_file in history_files:
-                    self.root.after(
-                        0,
-                        lambda path=history_file: self.add_history_entry(
-                            path,
-                            conversion_label
-                        )
-                    )
-
-                self.last_downloaded_file = main_file
-
-                self.mark_progress_done_threadsafe()
-
-                self.root.after(
+            for path, label in results:
+                self.after_ui(
                     0,
-                    lambda: self.on_success(
-                        folder,
-                        main_file
-                    )
+                    lambda path=path, label=label: self.add_history_entry(path, label)
                 )
-
-            else:
-                err = (
-                    output_text
-                    or "Erreur inconnue"
-                ).strip()
-
-                self.root.after(
-                    0,
-                    lambda: self.on_download_error(err, cookie_source, returncode)
+            main_file = results[0][0]
+            self.last_downloaded_file = main_file
+            self.mark_progress_done_threadsafe()
+            self.after_ui(
+                0,
+                lambda: self.on_success(
+                    folder, main_file, conversion_errors=conversion_errors
                 )
+            )
 
-        except Exception as e:
-            error_text = str(e)
-            self.root.after(
+        except Exception as exc:
+            error_text = str(exc)
+            self.after_ui(
                 0,
                 lambda: self.on_download_error(error_text, cookie_source, -1)
             )
@@ -4320,13 +4152,20 @@ class App:
                 f"{sanitize_technical_text(error_text)}"
         )
 
-    def on_success(self, folder, main_file):
+    def on_success(self, folder, main_file, conversion_errors=()):
         self.cleanup_temporary_cookie_source(self.selected_cookie_source)
         self.cancel_btn.config(state="disabled")
         self.enable_start_button()
         self.enable_choose_format_button()
 
         self.clear_progress_log_line_marker()
+
+        self.result_warning = None
+        if conversion_errors:
+            self.result_warning = (
+                f"Conversion incomplète : {len(conversion_errors)} fichier(s) "
+                "conservé(s) au format d'origine."
+            )
 
         if main_file:
             self.set_status(
@@ -4343,6 +4182,17 @@ class App:
             )
 
         self.show_result(main_file, folder)
+
+        if self.result_warning:
+            self.set_status(self.result_warning, palette["warning"])
+            self.append_log(self.result_warning)
+            details = "\n".join(conversion_errors[:3])
+            if len(conversion_errors) > 3:
+                details += "\nLes autres erreurs figurent dans le journal."
+            messagebox.showwarning(
+                "Conversion incomplète",
+                self.result_warning + "\n\n" + details
+            )
 
         if (
             main_file
@@ -4390,7 +4240,7 @@ class App:
                     + "\n"
                 )
 
-            self.root.after(
+            self.after_ui(
                 0,
                 lambda: self.on_hash_success(
                     folder,
@@ -4402,7 +4252,7 @@ class App:
 
         except Exception as e:
             error_text = str(e)
-            self.root.after(
+            self.after_ui(
                 0,
                 lambda: self.on_hash_error(
                     folder,
@@ -4439,6 +4289,11 @@ class App:
             f"{os.path.basename(hash_txt_path)}",
             palette["success"]
         )
+        if self.result_warning:
+            self.set_status(
+                self.result_warning + " SHA-256 enregistré.",
+                palette["warning"]
+            )
         self.show_result(main_file, folder)
 
     def on_hash_error(self, folder, error_text):
@@ -4544,6 +4399,8 @@ class App:
             return process.wait()
 
         finally:
+            if process.stdout is not None:
+                process.stdout.close()
             self.current_process = None
 
     def cancel_download(self):
@@ -4558,7 +4415,7 @@ class App:
     def finish_cancelled_download(self):
         # Worker thread: only files written by this download are removed.
         self.remove_partial_outputs()
-        self.root.after(0, self.on_download_cancelled)
+        self.after_ui(0, self.on_download_cancelled)
 
     def remove_partial_outputs(self):
         for path in dict.fromkeys(self.current_download_outputs):

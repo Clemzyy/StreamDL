@@ -182,7 +182,7 @@ def main() -> None:
     print(f"Compilation de {source.name}, édition {edition}...")
 
     if options.pyinstaller:
-        import PyInstaller.__main__
+        import PyInstaller.__main__  # type: ignore[import-untyped]
 
         PyInstaller.__main__.run(pyinstaller_arguments(source, options.full))
     else:

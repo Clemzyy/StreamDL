@@ -476,7 +476,10 @@ class DarkIconTests(unittest.TestCase):
     def pixels(self, name):
         from PIL import Image
 
-        return list(Image.open(build_exe.PROJECT_DIR / name).convert("RGBA").getdata())
+        with Image.open(build_exe.PROJECT_DIR / name) as image:
+            rgba = image.convert("RGBA")
+            return [rgba.getpixel((x, y)) for y in range(rgba.height)
+                    for x in range(rgba.width)]
 
     def test_every_icon_has_a_dark_version_without_its_light_disc(self):
         # GitHub's dark version is white on purpose: test_github_is_white...
