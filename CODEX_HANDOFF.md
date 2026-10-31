@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.88.pyw
-  current_app_label: "Téléchargeur Vidéo v1.88 by Clemzy (APP_VERSION follows the source number)"
-  next_source_version: "1.89"
+  current_source: telechargeur_youtube_v1.89.pyw
+  current_app_label: "Téléchargeur Vidéo v1.89 by Clemzy (APP_VERSION follows the source number)"
+  next_source_version: "1.90"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -42,8 +42,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.86.pyw: présentation Windows 11 (sv-ttk clair/sombre, blocs, aperçu)
     - telechargeur_youtube_v1.87.pyw: thème imposé par le nom de l'exe (copies de test)
     - telechargeur_youtube_v1.88.pyw: clair par défaut, fenêtre affichée une seule fois
+    - telechargeur_youtube_v1.89.pyw: yt-dlp en version dossier, téléchargement depuis le JSON de l'aperçu
   files_expected:
-    - telechargeur_youtube_v1.88.pyw
+    - telechargeur_youtube_v1.89.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
@@ -285,6 +286,38 @@ VERSION_1_88_CHANGE:
     on <Map> (follow_theme_title_bar) with SetWindowPos(SWP_FRAMECHANGED) to repaint the frame.
   - Tests: Tk roots must not be freed outside the main thread (Tcl_AsyncDelete abort): the test
     cleanup joins worker threads and runs gc.collect(); avoid closures stored on a root.
+
+VERSION_1_89_CHANGE:
+  - Where the time went (measured): opening the app 0.5-0.75 s; each yt-dlp.exe start 1.5 s
+    (the single-file build unpacks itself at every run); 2 yt-dlp runs per video (-J, download),
+    and the download run read the YouTube page and solved the JS challenge again. A Rust rewrite
+    was considered and rejected: yt-dlp stays Python whatever the app is written in.
+  - yt-dlp folder build: YTDLP.asset_name = "yt-dlp_win.zip" (yt-dlp.exe + _internal\, 143 files,
+    39 MB), checked against SHA2-256SUMS like before. Starts in 0.47 s instead of 1.46 s.
+    _extract_members keeps sub-folders; every path part must match SAFE_NAME_RE and must not be a
+    Windows device name (NUL, CON...). ToolSpec.required_dirs=("_internal",): a copy without it
+    (the single yt-dlp.exe installed by 1.84-1.88) is ignored and replaced by the folder build at
+    the first launch of 1.89 (~3 s). Copies made by 1.89 still work with older exes.
+  - YTDLP_SINGLE_FILE (asset yt-dlp.exe) is kept for build_exe.py --full, which embeds one file.
+  - The download reuses the -J JSON of the preview (--load-info-json, temporary file in %TEMP%,
+    deleted at once: it may hold request cookies) for a single video (_type == "video"). Playlists
+    read their pages again (links expire after a few hours). If the JSON run fails (expired link),
+    run_download() logs it and runs again with the URL.
+  - Real test, hidden window, 19 s video, MP4 shortcut, click to file ready: 1.88 = 10.4 s,
+    1.89 = 4.8 s (6.2 s on the very first run, while the antivirus scans the new files).
+  - Limit: the longest member path is 81 characters; a tool folder deeper than ~170 characters
+    exceeds Windows' 260-character limit and the yt-dlp install fails (FileNotFoundError). The real
+    %LOCALAPPDATA%\StreamDL\tools path is far below that.
+
+PENDING_FEEDBACK_V1_90 (from a friend using an older version, to triage against 1.89):
+  - Right-click menu in text fields: Couper / Copier / Coller / Tout sélectionner.
+  - Cookies from Opera GX are not read automatically (manual cookies.txt export works well).
+  - Format choice in sections: "Automatique" or "Personnalisé" with drop-downs for video+audio,
+    video only, audio only.
+  - Estimated file size before downloading.
+  - "L'historique ne fonctionne pas" (check against the Historique tab added in 1.86).
+  - The SHA-256 file is not saved next to the video.
+  - Default download folder: already done in 1.85 (Windows Downloads folder).
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc

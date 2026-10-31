@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 
 from tools_manager import (
-    YTDLP,
+    YTDLP_SINGLE_FILE,
     ToolCopy,
     describe_error,
     fetch_latest_release,
@@ -141,11 +141,14 @@ def source_files(source: Path) -> list[Path]:
 
 
 def refresh_bundled_ytdlp() -> None:
+    # The full build embeds the single yt-dlp.exe: the folder build installed
+    # by the light build would add its 140 files to the executable.
+    spec = YTDLP_SINGLE_FILE
     bundled_path = PROJECT_DIR / "yt-dlp.exe"
-    current = ToolCopy(str(bundled_path), run_version_command(YTDLP, str(bundled_path)), "local")
+    current = ToolCopy(str(bundled_path), run_version_command(spec, str(bundled_path)), "local")
 
     try:
-        release = fetch_latest_release(YTDLP)
+        release = fetch_latest_release(spec)
     except Exception as exc:
         print(f"Vérification de yt-dlp impossible ({describe_error(exc)}), version locale conservée.")
         return
@@ -156,7 +159,7 @@ def refresh_bundled_ytdlp() -> None:
 
     print(f"Mise à jour de yt-dlp {current.version} -> {release.version}...")
     with tempfile.TemporaryDirectory() as temporary_dir:
-        updated = install_release(YTDLP, release, Path(temporary_dir))
+        updated = install_release(spec, release, Path(temporary_dir))
         shutil.copy2(updated.path, bundled_path)
     print(f"yt-dlp {release.version} vérifié (SHA-256) et copié dans le projet.")
 

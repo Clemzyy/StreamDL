@@ -18,6 +18,7 @@ from tools_manager import (
     DENO,
     FFMPEG,
     YTDLP,
+    YTDLP_SINGLE_FILE,
     ChecksumMismatch,
     ReleaseInfo,
     ToolCopy,
@@ -98,6 +99,15 @@ def api_release(tag, assets, name=None):
     }).encode()
 
 
+# yt-dlp_win.zip, the folder build: yt-dlp.exe beside its _internal libraries.
+YTDLP_ZIP = make_zip({
+    "yt-dlp.exe": FAKE_EXE,
+    "_internal/python314.dll": b"python",
+    "_internal/certifi/cacert.pem": b"certificates",
+})
+YTDLP_SUMS = classic_checksums(YTDLP_ZIP, YTDLP.asset_name)
+
+
 class VersionTests(unittest.TestCase):
     def test_stable_and_nightly_versions(self):
         self.assertEqual(parse_version("2026.10.26"), (2026, 10, 26))
@@ -140,13 +150,14 @@ class ChecksumTests(unittest.TestCase):
 class FetchLatestReleaseTests(unittest.TestCase):
     def test_reads_ytdlp_api(self):
         api = json.dumps({"tag_name": "2026.10.26", "assets": [
-            {"name": "yt-dlp.exe", "digest": "sha256:" + "A" * 64},
+            {"name": "yt-dlp.exe", "digest": "sha256:" + "B" * 64},
+            {"name": "yt-dlp_win.zip", "digest": "sha256:" + "A" * 64},
             {"name": "SHA2-256SUMS"},
         ]}).encode()
         with fake_github({YTDLP.api_url: api}):
             release = fetch_latest_release(YTDLP)
         self.assertEqual(release.version, "2026.10.26")
-        self.assertTrue(release.asset_url.endswith("/download/2026.10.26/yt-dlp.exe"))
+        self.assertTrue(release.asset_url.endswith("/download/2026.10.26/yt-dlp_win.zip"))
         self.assertEqual(release.published_digest, "a" * 64)
 
     def test_tag_with_trailing_newline_is_refused(self):
@@ -231,6 +242,8 @@ class StorageTestCase(unittest.TestCase):
         folder = self.storage / spec.name / version
         folder.mkdir(parents=True)
         (folder / spec.exe_name).write_bytes(FAKE_EXE)
+        for name in spec.required_dirs:
+            (folder / name).mkdir()
         if complete:
             (folder / tools_manager.MARKER_NAME).write_text(json.dumps({"version": version}))
         return str(folder / spec.exe_name)
@@ -247,6 +260,16 @@ class StorageTests(StorageTestCase):
 
     def test_missing_storage(self):
         self.assertEqual(find_installed_copies(YTDLP, self.storage), [])
+
+    def test_single_file_ytdlp_of_older_versions_is_not_used(self):
+        # StreamDL 1.84 to 1.88 installed the single yt-dlp.exe, which starts
+        # 1 s slower than the folder build that replaces it.
+        folder = self.storage / "yt-dlp" / "2026.10.26"
+        folder.mkdir(parents=True)
+        (folder / "yt-dlp.exe").write_bytes(FAKE_EXE)
+        (folder / tools_manager.MARKER_NAME).write_text(json.dumps({"version": "2026.10.26"}))
+        self.assertEqual(find_installed_copies(YTDLP, self.storage), [])
+        self.assertIsNone(resolve_tool(YTDLP, [], self.storage, allow_path=False))
 
     def test_cleanup_keeps_selected_copy_and_unknown_folders(self):
         old = self.add_copy(YTDLP, "2026.9.1")
@@ -348,31 +371,31 @@ class InstallReleaseTests(StorageTestCase):
 
     def test_installs_verified_ytdlp(self):
         progress = []
-        copy = self.install(YTDLP, "2026.10.26", "2026.10.26", FAKE_EXE,
-                            classic_checksums(FAKE_EXE, "yt-dlp.exe"),
+        copy = self.install(YTDLP, "2026.10.26", "2026.10.26", YTDLP_ZIP,
+                            YTDLP_SUMS,
                             progress=lambda done, total: progress.append((done, total)))
         self.assertEqual(Path(copy.path).read_bytes(), FAKE_EXE)
         self.assertEqual([c.version for c in find_installed_copies(YTDLP, self.storage)], ["2026.10.26"])
         self.assertEqual(list(Path(copy.path).parent.glob("*.part")), [])
-        self.assertEqual(progress[-1], (len(FAKE_EXE), len(FAKE_EXE)))
+        self.assertEqual(progress[-1], (len(YTDLP_ZIP), len(YTDLP_ZIP)))
 
     def test_checksum_mismatch_never_runs_the_file(self):
         with self.assertRaises(ChecksumMismatch):
             self.install(YTDLP, "2026.10.26", "2026.10.26", b"tampered",
-                         classic_checksums(FAKE_EXE, "yt-dlp.exe"))
+                         YTDLP_SUMS)
         self.runner.assert_not_called()
         self.assertEqual(find_installed_copies(YTDLP, self.storage), [])
         self.assertEqual([p for p in self.storage.rglob("*") if p.is_file()], [])
 
     def test_missing_checksum(self):
         with self.assertRaises(UpdateError):
-            self.install(YTDLP, "2026.10.26", "2026.10.26", FAKE_EXE, b"")
+            self.install(YTDLP, "2026.10.26", "2026.10.26", YTDLP_ZIP, b"")
 
     def test_interrupted_download_leaves_nothing_usable(self):
         release_asset = FakeResponse(FAKE_EXE * 1000, fail_after=100)
         with self.assertRaises(UpdateError):
             self.install(YTDLP, "2026.10.26", "2026.10.26", release_asset,
-                         classic_checksums(FAKE_EXE * 1000, "yt-dlp.exe"))
+                         classic_checksums(FAKE_EXE * 1000, YTDLP.asset_name))
         self.assertEqual(find_installed_copies(YTDLP, self.storage), [])
         self.assertEqual([p for p in self.storage.rglob("*") if p.is_file()], [])
 
@@ -380,20 +403,20 @@ class InstallReleaseTests(StorageTestCase):
         big = b"x" * 2048
         spec = replace(YTDLP, max_download_bytes=1024)
         with self.assertRaises(UpdateError):
-            self.install(spec, "2026.10.26", "2026.10.26", big, classic_checksums(big, "yt-dlp.exe"))
+            self.install(spec, "2026.10.26", "2026.10.26", big, classic_checksums(big, YTDLP.asset_name))
         self.assertEqual([p for p in self.storage.rglob("*") if p.is_file()], [])
 
     def test_copy_that_does_not_start_is_removed(self):
         with self.assertRaises(UpdateError):
-            self.install(YTDLP, "2026.10.26", "2026.10.26", FAKE_EXE,
-                         classic_checksums(FAKE_EXE, "yt-dlp.exe"), reported="none")
+            self.install(YTDLP, "2026.10.26", "2026.10.26", YTDLP_ZIP,
+                         YTDLP_SUMS, reported="none")
         self.assertFalse((self.storage / "yt-dlp" / "2026.10.26").exists())
 
     def test_not_enough_disk_space(self):
         with mock.patch("shutil.disk_usage", return_value=mock.Mock(free=10)):
             with self.assertRaises(UpdateError):
-                self.install(YTDLP, "2026.10.26", "2026.10.26", FAKE_EXE,
-                             classic_checksums(FAKE_EXE, "yt-dlp.exe"))
+                self.install(YTDLP, "2026.10.26", "2026.10.26", YTDLP_ZIP,
+                             YTDLP_SUMS)
 
     def test_locked_file_is_retried(self):
         real_replace = os.replace
@@ -406,15 +429,15 @@ class InstallReleaseTests(StorageTestCase):
             return real_replace(source, target)
 
         with mock.patch("os.replace", side_effect=flaky_replace):
-            copy = self.install(YTDLP, "2026.10.26", "2026.10.26", FAKE_EXE,
-                                classic_checksums(FAKE_EXE, "yt-dlp.exe"))
+            copy = self.install(YTDLP, "2026.10.26", "2026.10.26", YTDLP_ZIP,
+                                YTDLP_SUMS)
         self.assertTrue(Path(copy.path).is_file())
         self.assertGreaterEqual(len(attempts), 3)
 
     def test_slow_first_start_is_retried(self):
         release = ReleaseInfo.for_tag(YTDLP, "2026.10.26", "2026.10.26")
-        responses = {release.checksums_url: classic_checksums(FAKE_EXE, "yt-dlp.exe"),
-                     release.asset_url: FAKE_EXE}
+        responses = {release.checksums_url: YTDLP_SUMS,
+                     release.asset_url: YTDLP_ZIP}
         with fake_github(responses), mock.patch.object(
             tools_manager, "run_version_command", side_effect=[None, None, "2026.10.26"]
         ):
@@ -429,8 +452,8 @@ class InstallReleaseTests(StorageTestCase):
             return "2026.10.26"
 
         release = ReleaseInfo.for_tag(YTDLP, "2026.10.26", "2026.10.26")
-        responses = {release.checksums_url: classic_checksums(FAKE_EXE, "yt-dlp.exe"),
-                     release.asset_url: FAKE_EXE}
+        responses = {release.checksums_url: YTDLP_SUMS,
+                     release.asset_url: YTDLP_ZIP}
         with fake_github(responses), mock.patch.object(tools_manager, "run_version_command",
                                                        side_effect=record_folder):
             install_release(YTDLP, release, self.storage)
@@ -439,8 +462,8 @@ class InstallReleaseTests(StorageTestCase):
 
     def test_other_window_finishing_first_is_reused(self):
         release = ReleaseInfo.for_tag(YTDLP, "2026.10.26", "2026.10.26")
-        responses = {release.checksums_url: classic_checksums(FAKE_EXE, "yt-dlp.exe"),
-                     release.asset_url: FAKE_EXE}
+        responses = {release.checksums_url: YTDLP_SUMS,
+                     release.asset_url: YTDLP_ZIP}
 
         def other_window_installs(spec, path):
             # While this install checks its copy, another StreamDL window
@@ -453,6 +476,58 @@ class InstallReleaseTests(StorageTestCase):
             copy = install_release(YTDLP, release, self.storage)
         self.assertEqual(copy.path, str(self.storage / "yt-dlp" / "2026.10.26" / "yt-dlp.exe"))
         self.assertEqual(sorted(p.name for p in (self.storage / "yt-dlp").iterdir()), ["2026.10.26"])
+
+    def test_ytdlp_folder_build_keeps_its_internal_folder(self):
+        archive = make_zip({
+            "yt-dlp.exe": FAKE_EXE,
+            "_internal/python314.dll": b"python",
+            "_internal/certifi/cacert.pem": b"certificates",
+            "README.txt": b"doc",
+        })
+        copy = self.install(YTDLP, "2026.10.26", "2026.10.26", archive,
+                            classic_checksums(archive, YTDLP.asset_name))
+        folder = Path(copy.path).parent
+        self.assertEqual(
+            sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file()),
+            ["_internal/certifi/cacert.pem", "_internal/python314.dll",
+             tools_manager.MARKER_NAME, "yt-dlp.exe"],
+        )
+
+    def test_ytdlp_folder_build_replaces_the_single_file_copy(self):
+        folder = self.storage / "yt-dlp" / "2026.10.26"
+        folder.mkdir(parents=True)
+        (folder / "yt-dlp.exe").write_bytes(b"single file")
+        (folder / tools_manager.MARKER_NAME).write_text(json.dumps({"version": "2026.10.26"}))
+        copy = self.install(YTDLP, "2026.10.26", "2026.10.26", YTDLP_ZIP, YTDLP_SUMS)
+        self.assertEqual(copy.path, str(folder / "yt-dlp.exe"))
+        self.assertTrue((folder / "_internal" / "python314.dll").is_file())
+        self.assertEqual([c.path for c in find_installed_copies(YTDLP, self.storage)], [copy.path])
+
+    def test_ytdlp_zip_paths_stay_inside_the_tool_folder(self):
+        for member in ("_internal/../../evil.dll", "_internal//evil.dll", "_internal/C:/evil.dll",
+                       "_internal/NUL.dll", "_internal/sub/con"):
+            with self.subTest(member=member):
+                archive = make_zip({"yt-dlp.exe": FAKE_EXE, "_internal/ok.dll": b"ok", member: b"x"})
+                with self.assertRaises(UpdateError):
+                    self.install(YTDLP, "2026.10.26", "2026.10.26", archive,
+                                 classic_checksums(archive, YTDLP.asset_name))
+                self.runner.assert_not_called()
+                self.assertEqual(find_installed_copies(YTDLP, self.storage), [])
+        self.assertEqual(list(self.storage.parent.rglob("evil.dll")), [])
+
+    def test_ytdlp_zip_without_its_internal_folder_is_refused(self):
+        archive = make_zip({"yt-dlp.exe": FAKE_EXE})
+        with self.assertRaises(UpdateError):
+            self.install(YTDLP, "2026.10.26", "2026.10.26", archive,
+                         classic_checksums(archive, YTDLP.asset_name))
+        self.runner.assert_not_called()
+        self.assertEqual(find_installed_copies(YTDLP, self.storage), [])
+
+    def test_single_file_ytdlp_for_full_builds(self):
+        copy = self.install(YTDLP_SINGLE_FILE, "2026.10.26", "2026.10.26", FAKE_EXE,
+                            classic_checksums(FAKE_EXE, "yt-dlp.exe"))
+        folder = Path(copy.path).parent
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), [tools_manager.MARKER_NAME, "yt-dlp.exe"])
 
     def test_deno_zip_extracts_only_deno(self):
         archive = make_zip({"deno.exe": FAKE_EXE, "README.md": b"doc", "../evil.exe": b"x"})
@@ -484,8 +559,8 @@ class InstallReleaseTests(StorageTestCase):
     def test_github_digest_must_match_the_published_checksum(self):
         release = replace(ReleaseInfo.for_tag(YTDLP, "2026.10.26", "2026.10.26"),
                           published_digest="f" * 64)
-        responses = {release.checksums_url: classic_checksums(FAKE_EXE, "yt-dlp.exe"),
-                     release.asset_url: FAKE_EXE}
+        responses = {release.checksums_url: YTDLP_SUMS,
+                     release.asset_url: YTDLP_ZIP}
         with fake_github(responses), mock.patch.object(tools_manager, "run_version_command") as runner:
             with self.assertRaises(ChecksumMismatch):
                 install_release(YTDLP, release, self.storage)
@@ -495,7 +570,7 @@ class InstallReleaseTests(StorageTestCase):
     def test_oversized_checksum_file_is_rejected(self):
         huge = b"0" * (tools_manager.METADATA_MAX_BYTES + 1)
         with self.assertRaises(UpdateError):
-            self.install(YTDLP, "2026.10.26", "2026.10.26", FAKE_EXE, huge)
+            self.install(YTDLP, "2026.10.26", "2026.10.26", YTDLP_ZIP, huge)
 
     def test_zip_without_the_executable(self):
         archive = make_zip({"README.md": b"doc"})

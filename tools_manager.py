@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -51,8 +51,10 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 POWERSHELL_HASH_RE = re.compile(r"^\s*Hash\s*:\s*([0-9A-Fa-f]{64})\s*$")
 POWERSHELL_PATH_RE = re.compile(r"^\s*Path\s*:\s*(.+?)\s*$")
 TAG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-# A file written into a tool folder: no separator, drive letter or "..".
+# Each part of a path written into a tool folder: no separator, drive letter or "..".
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+# Names Windows opens as devices (NUL, CON...), whatever their extension.
+WINDOWS_DEVICE_RE = re.compile(r"^(?:CON|PRN|AUX|NUL|COM\d|LPT\d)(?:\..*)?$", re.IGNORECASE)
 NUMERIC_VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
 
 # Stable yt-dlp releases are dated (2026.10.26); nightly builds add a time component.
@@ -94,8 +96,10 @@ class ToolSpec:
     required_free_bytes: int
     max_download_bytes: int
     max_unpacked_bytes: int = 0
-    # Zip member name -> file name to extract, or None to skip it.
+    # Zip member name -> path to extract ("/"-separated), or None to skip it.
     select_member: Optional[Callable[[str], Optional[str]]] = None
+    # Folders a complete copy has beside its executable.
+    required_dirs: tuple[str, ...] = ()
     # False when the executable cannot report the release version (ffmpeg).
     exact_version_check: bool = True
     # 0 checks for updates at each launch.
@@ -168,6 +172,12 @@ def _ytdlp_version_from_output(output: str) -> Optional[str]:
     return version if YTDLP_VERSION_RE.fullmatch(version) else None
 
 
+def _ytdlp_member(member: str) -> Optional[str]:
+    if member == "yt-dlp.exe" or member.startswith("_internal/"):
+        return member
+    return None
+
+
 def _deno_version_from_release(tag: str, name: Optional[str]) -> Optional[str]:
     version = tag[1:] if tag.startswith("v") else tag
     return version if DENO_VERSION_RE.fullmatch(version) else None
@@ -199,18 +209,33 @@ def _ffmpeg_member(member: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+# The folder build: yt-dlp.exe beside its _internal libraries. It starts in
+# 0.5 s, against 1.5 s for the single yt-dlp.exe, which unpacks itself into a
+# temporary folder at every run, and StreamDL runs it twice per video.
 YTDLP = ToolSpec(
     name="yt-dlp",
     exe_name="yt-dlp.exe",
     repository="yt-dlp/yt-dlp",
-    asset_name="yt-dlp.exe",
+    asset_name="yt-dlp_win.zip",
     checksums_name="SHA2-256SUMS",
     version_pattern=YTDLP_VERSION_RE,
     version_from_release=_ytdlp_version_from_release,
     version_args=("--version",),
     version_from_output=_ytdlp_version_from_output,
-    required_free_bytes=100 * MB,
+    required_free_bytes=200 * MB,
     max_download_bytes=100 * MB,
+    max_unpacked_bytes=200 * MB,
+    select_member=_ytdlp_member,
+    required_dirs=("_internal",),
+)
+
+# The single yt-dlp.exe, embedded by the full build (build_exe.py --full).
+YTDLP_SINGLE_FILE = replace(
+    YTDLP,
+    asset_name="yt-dlp.exe",
+    max_unpacked_bytes=0,
+    select_member=None,
+    required_dirs=(),
 )
 
 DENO = ToolSpec(
@@ -401,6 +426,16 @@ def run_version_command(spec: ToolSpec, exe_path: str, timeout: float = 90) -> O
     return spec.version_from_output(result.stdout or "")
 
 
+def _is_complete(spec: ToolSpec, folder: Path) -> bool:
+    # A single yt-dlp.exe installed by StreamDL 1.84 to 1.88 has no _internal
+    # folder: it is not used, and the folder build replaces it.
+    return (
+        (folder / MARKER_NAME).is_file()
+        and (folder / spec.exe_name).is_file()
+        and all((folder / name).is_dir() for name in spec.required_dirs)
+    )
+
+
 def find_installed_copies(spec: ToolSpec, storage_dir: Path) -> list[ToolCopy]:
     """Complete managed copies, newest first. Unfinished installs are never listed."""
     copies: list[ToolCopy] = []
@@ -410,13 +445,8 @@ def find_installed_copies(spec: ToolSpec, storage_dir: Path) -> list[ToolCopy]:
         return copies
 
     for entry in entries:
-        exe_path = entry / spec.exe_name
-        if (
-            parse_version(entry.name, spec.version_pattern)
-            and (entry / MARKER_NAME).is_file()
-            and exe_path.is_file()
-        ):
-            copies.append(ToolCopy(str(exe_path), entry.name, "managed"))
+        if parse_version(entry.name, spec.version_pattern) and _is_complete(spec, entry):
+            copies.append(ToolCopy(str(entry / spec.exe_name), entry.name, "managed"))
 
     copies.sort(key=lambda copy: copy.version_key, reverse=True)
     return copies
@@ -514,7 +544,7 @@ def _download(spec: ToolSpec, url: str, handle: int, expected_digest: str,
 
 
 def _extract_members(spec: ToolSpec, zip_path: str, target_dir: Path) -> None:
-    """Extract only whitelisted members, flattened into target_dir."""
+    """Extract only whitelisted members into target_dir, at the paths select_member gives."""
     select_member = spec.select_member
     assert select_member is not None
     written = 0
@@ -527,13 +557,19 @@ def _extract_members(spec: ToolSpec, zip_path: str, target_dir: Path) -> None:
                 name = select_member(info.filename)
                 if name is None:
                     continue
-                if not SAFE_NAME_RE.fullmatch(name) or name == MARKER_NAME:
+                parts = name.split("/")
+                if name == MARKER_NAME or not all(
+                    SAFE_NAME_RE.fullmatch(part) and not WINDOWS_DEVICE_RE.fullmatch(part)
+                    for part in parts
+                ):
                     raise UpdateError(f"nom de fichier refusé dans l'archive : {info.filename}")
                 if stat.S_ISLNK(info.external_attr >> 16):
                     raise UpdateError(f"lien symbolique refusé dans l'archive : {info.filename}")
                 if written + info.file_size > spec.max_unpacked_bytes:
                     raise UpdateError(f"l'archive de {spec.name} est anormalement volumineuse")
-                with archive.open(info) as source, open(target_dir / name, "xb") as output:
+                target = target_dir.joinpath(*parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source, open(target, "xb") as output:
                     while True:
                         chunk = source.read(CHUNK_SIZE)
                         if not chunk:
@@ -550,12 +586,14 @@ def _extract_members(spec: ToolSpec, zip_path: str, target_dir: Path) -> None:
 
     if not found_exe:
         raise UpdateError(f"{spec.exe_name} est absent de l'archive de {spec.name}")
+    for folder in spec.required_dirs:
+        if not (target_dir / folder).is_dir():
+            raise UpdateError(f"le dossier {folder} est absent de l'archive de {spec.name}")
 
 
 def _complete_copy(spec: ToolSpec, folder: Path, version: str) -> Optional[ToolCopy]:
-    exe_path = folder / spec.exe_name
-    if (folder / MARKER_NAME).is_file() and exe_path.is_file():
-        return ToolCopy(str(exe_path), version, "managed")
+    if _is_complete(spec, folder):
+        return ToolCopy(str(folder / spec.exe_name), version, "managed")
     return None
 
 

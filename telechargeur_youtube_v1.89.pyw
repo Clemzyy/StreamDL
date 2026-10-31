@@ -6,6 +6,7 @@ import shutil
 import hashlib
 import threading
 import subprocess
+import tempfile
 import time
 import webbrowser
 import ctypes
@@ -61,7 +62,7 @@ from tools_manager import (
 # through PATH; child processes such as yt-dlp inherit this setting.
 os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
-APP_VERSION = "1.88"
+APP_VERSION = "1.89"
 APP_TITLE = f"Téléchargeur Vidéo v{APP_VERSION} by Clemzy"
 WINDOW_SIZE = "650x780"
 
@@ -1125,6 +1126,8 @@ class App:
         self.selected_download_format = None
         self.selected_download_title = None
         self.selected_download_url = None
+        # yt-dlp's JSON from the preview of a single video, reused by the download.
+        self.selected_download_info = None
         self.selected_playlist_mode = False
         self.selected_cookies_browser = "Aucun"
         self.selected_cookie_source = CookieSource.none()
@@ -2598,6 +2601,41 @@ class App:
 
         return returncode, output_text
 
+    def run_download(self, cmd, url, info_json=None):
+        # The preview already read the page: yt-dlp starts from its JSON,
+        # about 2.5 s sooner. Its links expire after a few hours, so a failure
+        # reads the page again.
+        if info_json:
+            self.youtube_auth_error_seen = False
+            handle, info_path = tempfile.mkstemp(prefix="StreamDL-", suffix=".info.json")
+
+            try:
+                with os.fdopen(handle, "w", encoding="utf-8") as output:
+                    output.write(info_json)
+
+                returncode, output_text = self.run_command_live(
+                    cmd + ["--load-info-json", info_path]
+                )
+
+            finally:
+                # It may hold the cookies sent with the request.
+                try:
+                    os.remove(info_path)
+                except OSError:
+                    pass
+
+            if returncode == 0 or self.cancel_requested:
+                return returncode, output_text
+
+            self.append_log_threadsafe(
+                "Les informations de l'aperçu ne suffisent plus, "
+                "nouvelle lecture de la page..."
+            )
+
+        self.youtube_auth_error_seen = False
+        # "--" ends the options: the URL is never read as one.
+        return self.run_command_live(cmd + ["--", url])
+
     def build_unique_output_path(self, input_file, extension):
         base = os.path.splitext(input_file)[0]
         output_file = base + extension
@@ -2886,6 +2924,7 @@ class App:
         self.selected_download_format = None
         self.selected_download_title = None
         self.selected_download_url = None
+        self.selected_download_info = None
         self.selected_playlist_mode = playlist_mode
         self.selected_cookie_source = source
         self.selected_cookies_browser = source.browser or "Aucun"
@@ -2953,6 +2992,7 @@ class App:
                 self.selected_download_title,
                 self.selected_cookie_source,
             ),
+            kwargs={"info_json": self.selected_download_info},
             daemon=True
         ).start()
 
@@ -2985,6 +3025,10 @@ class App:
                 return
 
             data = json.loads(stdout_text)
+            # The download of a single video starts from this JSON instead of
+            # reading the page again. A playlist reads its pages again: its
+            # last links could expire before their turn comes.
+            info_json = stdout_text if data.get("_type", "video") == "video" else None
             preview_text = build_preview_text(data, playlist_mode)
             self.root.after(0, lambda: self.show_preview(preview_text))
 
@@ -3092,6 +3136,7 @@ class App:
                     title,
                     playlist_mode,
                     cookie_source,
+                    info_json=info_json,
                 )
             )
 
@@ -3111,6 +3156,7 @@ class App:
         title,
         playlist_mode,
         cookie_source,
+        info_json=None,
     ):
         self.current_formats_list = formats_list
 
@@ -3170,6 +3216,7 @@ class App:
         self.selected_download_format = selected
         self.selected_download_title = title
         self.selected_download_url = url
+        self.selected_download_info = info_json
         self.selected_playlist_mode = playlist_mode
         self.selected_cookie_source = cookie_source
 
@@ -3257,7 +3304,8 @@ class App:
         selected_format,
         playlist_mode,
         detected_title,
-        cookie_source
+        cookie_source,
+        info_json=None
     ):
         try:
             downloader = find_downloader(self.tool_path("yt-dlp"))
@@ -3300,16 +3348,12 @@ class App:
                     "mp4"
                 ])
 
-            cmd.extend(["--", url])
-
             self.set_status_threadsafe(
                 "Téléchargement en cours..."
             )
 
-            self.youtube_auth_error_seen = False
-
             returncode, output_text = (
-                self.run_command_live(cmd)
+                self.run_download(cmd, url, info_json)
             )
 
             if self.cancel_requested:

@@ -57,6 +57,8 @@ def add_managed_copy(storage, spec, version):
     folder = storage / spec.name / version
     folder.mkdir(parents=True)
     (folder / spec.exe_name).write_bytes(b"MZ")
+    for name in spec.required_dirs:
+        (folder / name).mkdir()
     (folder / MARKER_NAME).write_text(json.dumps({"version": version}))
     return ToolCopy(str(folder / spec.exe_name), version, "managed")
 

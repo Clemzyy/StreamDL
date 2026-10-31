@@ -135,6 +135,7 @@ class PresetTests(ErgonomicsTestCase):
             self.app.start_preset(kind)
             self.pump_until(lambda: worker.called)
         self.assertEqual(self.tk_errors, [])
+        self.worker_kwargs = worker.call_args.kwargs
         return worker.call_args.args
 
     def test_video_preset_downloads_best_mp4_without_format_dialog(self):
@@ -158,6 +159,23 @@ class PresetTests(ErgonomicsTestCase):
         command = live.call_args.args[0]
         self.assertEqual(command[command.index("-f") + 1], "ba/b")
 
+    def test_preview_json_is_handed_to_the_download(self):
+        self.run_preset("video")
+        self.assertEqual(json.loads(self.worker_kwargs["info_json"])["title"], "Me at the zoo")
+
+    def test_playlist_json_is_not_reused(self):
+        self.start_ready_app()
+        self.app.url_var.set("https://www.youtube.com/playlist?list=PL1")
+        self.app.playlist_mode_var.set(True)
+        info = json.dumps({"_type": "playlist", "title": "Liste", "entries": [
+            {"title": "Une", "formats": [{"format_id": "18", "acodec": "aac", "vcodec": "avc1", "ext": "mp4"}]},
+        ]})
+        with mock.patch.object(APP.App, "run_command_json", return_value=(0, info, "")), \
+                mock.patch.object(APP.App, "download_worker") as worker:
+            self.app.start_preset("video")
+            self.pump_until(lambda: worker.called)
+        self.assertIsNone(worker.call_args.kwargs["info_json"])
+
     def test_preset_needs_an_existing_folder(self):
         self.start_ready_app()
         self.app.url_var.set("https://www.youtube.com/watch?v=jNQXAC9IVRw")
@@ -172,6 +190,56 @@ class PresetTests(ErgonomicsTestCase):
         with mock.patch.object(self.app, "start_preset") as preset:
             self.app.on_url_return(None)
         preset.assert_called_once_with("video")
+
+
+class PreviewReuseTests(ErgonomicsTestCase):
+    URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+    INFO = json.dumps({"_type": "video", "title": "Me at the zoo", "formats": []})
+
+    def download(self, results):
+        """Run download_worker with run_command_live returning `results` in turn."""
+        self.start_ready_app()
+        self.commands = []
+        self.json_seen = []
+
+        def live(cmd):
+            self.commands.append(cmd)
+            if "--load-info-json" in cmd:
+                info_path = Path(cmd[cmd.index("--load-info-json") + 1])
+                self.json_seen.append((info_path, info_path.read_text(encoding="utf-8")))
+            result = results[len(self.commands) - 1]
+            return result() if callable(result) else result
+
+        with mock.patch.object(APP.App, "run_command_live", side_effect=live), \
+                mock.patch.object(APP.App, "on_download_error"), \
+                mock.patch.object(APP.App, "finish_cancelled_download"):
+            self.app.download_worker(self.URL, str(self.downloads), "BEST_AUTO", False,
+                                     "Me at the zoo", APP.CookieSource.none(), info_json=self.INFO)
+
+    def test_download_reads_the_preview_json_instead_of_the_page(self):
+        self.download([(1, "ERROR: test"), (1, "ERROR: test")])
+        first = self.commands[0]
+        self.assertNotIn(self.URL, first)
+        self.assertEqual(self.json_seen[0][1], self.INFO)
+        self.assertEqual(first[first.index("-f") + 1], "bv*+ba/b")
+        # The JSON may hold the cookies of the request: it is never left behind.
+        self.assertFalse(self.json_seen[0][0].exists())
+
+    def test_failed_download_from_the_json_reads_the_page_again(self):
+        self.download([(1, "ERROR: HTTP Error 403: Forbidden"), (0, "")])
+        self.assertEqual(len(self.commands), 2)
+        second = self.commands[1]
+        self.assertNotIn("--load-info-json", second)
+        self.assertEqual(second[-2:], ["--", self.URL])
+        self.assertEqual(second[:second.index("--")], self.commands[0][:self.commands[0].index("--load-info-json")])
+
+    def test_cancelled_download_is_not_retried(self):
+        def cancel():
+            self.app.cancel_requested = True
+            return (1, "")
+
+        self.download([cancel])
+        self.assertEqual(len(self.commands), 1)
 
 
 class CancelTests(ErgonomicsTestCase):
