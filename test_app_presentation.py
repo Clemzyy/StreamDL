@@ -20,6 +20,40 @@ VIDEO_INFO = {
     "formats": [{"format_id": "251", "acodec": "opus", "vcodec": "none", "ext": "webm"}],
 }
 
+# Part of yt-dlp's real -J output for jNQXAC9IVRw: formats go from worst to best.
+REAL_INFO = {
+    "title": "Me at the zoo",
+    "duration": 19,
+    "filesize_approx": 635110,
+    "formats": [
+        {"format_id": "sb0", "ext": "mhtml", "vcodec": "none", "acodec": "none"},
+        # HLS audio whose codec yt-dlp does not know.
+        {"format_id": "233", "ext": "mp4", "vcodec": "none", "acodec": None, "format_note": "Default, low",
+         "protocol": "m3u8_native"},
+        {"format_id": "139", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.5", "abr": 49.14,
+         "filesize": 117526},
+        {"format_id": "140-drc", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 129.757,
+         "filesize": 309197},
+        {"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus", "abr": 106.064,
+         "filesize": 252182},
+        {"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 129.796,
+         "filesize": 309288},
+        {"format_id": "160", "ext": "mp4", "vcodec": "avc1.4D400B", "acodec": "none", "height": 144,
+         "fps": 15, "tbr": 82.513, "filesize": 195278, "protocol": "https"},
+        {"format_id": "229", "ext": "mp4", "vcodec": "avc1.4D400C", "acodec": "none", "height": 240,
+         "fps": 15.0, "tbr": 245.113, "protocol": "m3u8_native"},
+        {"format_id": "134", "ext": "mp4", "vcodec": "avc1.4D400C", "acodec": "none", "height": 240,
+         "fps": 15, "tbr": 136.218, "filesize": 322379, "protocol": "https"},
+        {"format_id": "18", "ext": "mp4", "vcodec": "avc1.42001E", "acodec": "mp4a.40.2", "height": 240,
+         "fps": 15, "tbr": 266.531, "filesize_approx": 635110, "protocol": "https"},
+        # VP9 in mp4 over HLS: the same quality as 242, bigger and slower.
+        {"format_id": "604", "ext": "mp4", "vcodec": "vp09.00.20.08", "acodec": "none", "height": 240,
+         "fps": 15.0, "tbr": 198.586, "protocol": "m3u8_native"},
+        {"format_id": "242", "ext": "webm", "vcodec": "vp9", "acodec": "none", "height": 240,
+         "fps": 15, "tbr": 123.838, "filesize": 293080, "protocol": "https"},
+    ],
+}
+
 
 def block_of(widget):
     while widget is not None and not isinstance(widget, ttk.Labelframe):
@@ -178,6 +212,53 @@ class BottomTabsTests(ErgonomicsTestCase):
             self.app.add_history_entry(str(self.downloads / name), "Aucune")
         self.assertEqual(str(self.app.bottom_tabs.tab(self.app.history_tab, "text")), "Historique (2)")
 
+    def history_files(self):
+        return [self.app.history_tree.item(item, "values")[1] for item in self.app.history_tree.get_children()]
+
+    def test_history_is_kept_after_closing(self):
+        self.start_ready_app()
+        self.app.add_history_entry(str(self.downloads / "a.mp4"), "Aucune")
+        self.app.add_history_entry(str(self.downloads / "b.mp3"), "MP3")
+        self.app.on_application_close()
+        self.start_app()
+        self.assertEqual(self.history_files(), ["b.mp3", "a.mp4"])
+        self.assertEqual(self.app.download_history[0]["file"], str(self.downloads / "b.mp3"))
+        self.assertEqual(str(self.app.bottom_tabs.tab(self.app.history_tab, "text")), "Historique (2)")
+
+    def test_history_keeps_the_latest_downloads(self):
+        with mock.patch.object(APP, "HISTORY_LIMIT", 3):
+            self.start_ready_app()
+            for index in range(5):
+                self.app.add_history_entry(str(self.downloads / f"{index}.mp4"), "Aucune")
+            self.app.on_application_close()
+            self.start_app()
+        self.assertEqual(self.history_files(), ["4.mp4", "3.mp4", "2.mp4"])
+
+    def test_damaged_history_file_is_ignored(self):
+        history = self.storage.parent / "history.json"
+        history.parent.mkdir(parents=True, exist_ok=True)
+        history.write_text("{pas du json", encoding="utf-8")
+        self.start_ready_app()
+        self.assertEqual(self.history_files(), [])
+        self.app.on_application_close()
+        entries = [{"file": 3}, "texte", {"time": "31/10 12:00", "file": "C:/Vidéos/ok.mp4",
+                                         "conversion": "Aucune", "folder": "C:/Vidéos"}]
+        history.write_text(json.dumps(entries), encoding="utf-8")
+        self.start_app()
+        self.assertEqual(self.history_files(), ["ok.mp4"])
+        self.assertEqual(self.tk_errors, [])
+
+    def test_history_can_be_cleared(self):
+        self.start_ready_app()
+        self.app.add_history_entry(str(self.downloads / "a.mp4"), "Aucune")
+        with mock.patch.object(APP.messagebox, "askyesno", return_value=True):
+            self.app.clear_history()
+        self.assertEqual(self.history_files(), [])
+        self.assertEqual(str(self.app.bottom_tabs.tab(self.app.history_tab, "text")), "Historique")
+        self.app.on_application_close()
+        self.start_app()
+        self.assertEqual(self.history_files(), [])
+
 
 class ThemedIconTests(ErgonomicsTestCase):
     def test_github_icon_is_light_on_the_dark_theme(self):
@@ -190,6 +271,82 @@ class ThemedIconTests(ErgonomicsTestCase):
     def test_regular_icon_on_the_light_theme(self):
         self.start_ready_app()
         self.assertTrue(APP.themed_asset("social_github.png").endswith("social_github.png"))
+
+
+def all_widgets(widget):
+    found = [widget]
+    for child in widget.winfo_children():
+        found += all_widgets(child)
+    return found
+
+
+class ThemeSwitchTests(ErgonomicsTestCase):
+    def labels(self):
+        return [label for label, _ in self.app.theme_menu_items()]
+
+    def test_light_theme_offers_dark_mode(self):
+        self.start_ready_app()
+        self.assertEqual(self.labels(), ["Passer en mode sombre"])
+
+    def test_switch_to_dark_mode_is_remembered(self):
+        self.start_ready_app()
+        dict(self.app.theme_menu_items())["Passer en mode sombre"]()
+        self.assertEqual(APP.palette["mode"], "dark")
+        self.assertEqual(self.labels(), ["Passer en mode clair"])
+        self.app.on_application_close()
+        self.start_app()
+        self.assertEqual(APP.palette["mode"], "dark")
+        self.assertEqual(self.labels(), ["Passer en mode clair"])
+
+    def test_colors_and_icons_follow_the_switch(self):
+        self.start_ready_app()
+        light, dark = APP.PALETTES["light"], APP.PALETTES["dark"]
+        muted = [widget for widget in all_widgets(self.root)
+                 if isinstance(widget, ttk.Label) and str(widget.cget("foreground")).lower() == light["muted"]]
+        self.assertTrue(muted)
+        self.app.switch_theme("dark")
+        self.assertEqual({str(widget.cget("foreground")).lower() for widget in muted}, {dark["muted"]})
+        self.assertEqual(str(self.app.log_box.cget("background")).lower(), dark["text_bg"])
+        self.assertEqual(str(self.app.log_box.tag_cget("detail", "foreground")).lower(), dark["detail"])
+        self.assertTrue(APP.themed_asset("social_github.png").endswith("social_github_dark.png"))
+        self.app.switch_theme("light")
+        self.assertEqual({str(widget.cget("foreground")).lower() for widget in muted}, {light["muted"]})
+        self.assertEqual(self.tk_errors, [])
+
+    def test_switched_window_matches_a_window_opened_dark(self):
+        with mock.patch.object(APP, "get_launcher_path", return_value="C:/Apps/StreamDL-sombre.exe"):
+            self.start_ready_app()
+        opened_dark = {str(widget): str(widget.cget("background")) for widget in all_widgets(self.root)
+                       if not isinstance(widget, ttk.Widget)}
+        self.app.on_application_close()
+        self.start_app()
+        self.app.switch_theme("dark")
+        switched = {str(widget): str(widget.cget("background")) for widget in all_widgets(self.root)
+                    if not isinstance(widget, ttk.Widget)}
+        self.assertEqual(switched, opened_dark)
+
+    def test_exe_name_still_wins(self):
+        self.start_ready_app()
+        self.app.switch_theme("dark")
+        self.app.on_application_close()
+        with mock.patch.object(APP, "get_launcher_path", return_value="C:/Apps/StreamDL-clair.exe"):
+            self.start_app()
+        self.assertEqual(APP.palette["mode"], "light")
+
+    def test_classic_windows_look_has_no_switch(self):
+        with mock.patch.object(APP, "get_launcher_path", return_value="C:/Apps/StreamDL-natif.exe"):
+            self.start_ready_app()
+        self.assertEqual(self.app.theme_menu_items(), [])
+
+    def test_right_click_menus_offer_the_switch(self):
+        self.start_ready_app()
+        menu = APP.build_edit_menu(self.app.url_entry, self.app.theme_menu_items())
+        self.assertEqual(menu.entrycget(menu.index("end"), "label"), "Passer en mode sombre")
+        event = mock.Mock(widget=self.app.history_tree, x_root=3, y_root=4)
+        with mock.patch.object(APP.tk.Menu, "tk_popup") as popup:
+            self.app.show_window_menu(event)
+        popup.assert_called_once_with(3, 4)
+        self.assertTrue(self.root.bind("<Button-3>"))
 
 
 class ConversionOptionsTests(ErgonomicsTestCase):
@@ -215,6 +372,95 @@ class ConversionOptionsTests(ErgonomicsTestCase):
         self.assertEqual(str(self.app.audio_conversion_combo["state"]), "readonly")
 
 
+class FormatChoicesTests(unittest.TestCase):
+    def setUp(self):
+        self.choices = APP.format_choices(REAL_INFO)
+
+    def formats(self, kind):
+        return [choice["format"] for choice in self.choices[kind]]
+
+    def test_three_kinds_best_first(self):
+        # Storyboards (mhtml), DRC audio copies and the unknown codec (233)
+        # are left out; the HLS copies of 134 (229) and 242 (604) are duplicates.
+        self.assertEqual(self.formats("video"), ["134+ba/134", "242+ba/242", "160+ba/160"])
+        self.assertEqual(self.formats("video_only"), ["134", "242", "160"])
+        self.assertEqual(self.formats("audio"), ["140", "251", "139"])
+
+    def test_video_with_sound_adds_the_best_audio_size(self):
+        best = self.choices["video"][0]
+        self.assertEqual(best["size"], 322379 + 309288)
+        self.assertEqual(best["label"], "240p · 15 i/s · H.264 · ~616,9 Ko")
+        self.assertEqual(best["kind"], "video")
+
+    def test_labels_of_video_only_and_audio(self):
+        self.assertEqual(self.choices["video_only"][1]["label"], "240p · 15 i/s · VP9 · webm · ~286,2 Ko")
+        self.assertEqual(self.choices["audio"][0]["label"], "130 kb/s · AAC · m4a · ~302,0 Ko")
+        self.assertEqual(self.choices["audio"][0]["kind"], "audio")
+
+    def test_automatic_size(self):
+        self.assertEqual(self.choices["auto_size"], 635110)
+
+    def test_size_estimated_from_bitrate_and_duration(self):
+        self.assertEqual(APP.estimated_size({"tbr": 245.113}, 19), int(245.113 * 125 * 19))
+        self.assertIsNone(APP.estimated_size({}, 19))
+
+    def test_site_with_a_single_unknown_format(self):
+        choices = APP.format_choices({"formats": [{"format_id": "0", "ext": "mp4", "url": "x"}]})
+        self.assertEqual(self.formats_of(choices, "video"), ["0"])
+
+    def formats_of(self, choices, kind):
+        return [choice["format"] for choice in choices[kind]]
+
+    def test_sizes_in_french_units(self):
+        self.assertEqual(APP.human_size(635110), "620,2 Ko")
+        self.assertEqual(APP.human_size(3 * 1024 ** 3), "3,0 Go")
+        self.assertEqual(APP.human_size(None), "?")
+
+
+class FormatDialogTests(ErgonomicsTestCase):
+    def open_dialog(self):
+        self.start_ready_app()
+        self.choices = APP.format_choices(REAL_INFO)
+        dialog = APP.FormatSelector(self.root, self.choices, "Vidéo : Me at the zoo")
+        self.addCleanup(lambda: dialog.winfo_exists() and dialog.destroy())
+        return dialog
+
+    def test_automatic_is_the_default(self):
+        dialog = self.open_dialog()
+        self.assertEqual(dialog.mode_var.get(), "auto")
+        self.assertIn("~620,2 Ko", str(dialog.auto_button["text"]))
+        self.assertEqual(str(dialog.format_combo["state"]), "disabled")
+        dialog.choose_selected()
+        self.assertEqual(dialog.selected_format, "BEST_AUTO")
+
+    def test_custom_video_with_sound(self):
+        dialog = self.open_dialog()
+        dialog.mode_var.set("custom")
+        dialog.update_state()
+        self.assertEqual(str(dialog.format_combo["state"]), "readonly")
+        self.assertEqual(list(dialog.type_combo["values"]),
+                         ["Vidéo avec son", "Vidéo uniquement (sans son)", "Audio uniquement"])
+        self.assertEqual(dialog.type_var.get(), "Vidéo avec son")
+        dialog.choose_selected()
+        self.assertEqual(dialog.selected_format, "134+ba/134")
+
+    def test_custom_audio(self):
+        dialog = self.open_dialog()
+        dialog.mode_var.set("custom")
+        dialog.update_state()
+        dialog.type_var.set("Audio uniquement")
+        dialog.fill_formats()
+        self.assertEqual(list(dialog.format_combo["values"]), [c["label"] for c in self.choices["audio"]])
+        dialog.format_combo.current(1)
+        dialog.choose_selected()
+        self.assertEqual(dialog.selected_format, "251")
+
+    def test_cancel(self):
+        dialog = self.open_dialog()
+        dialog.cancel()
+        self.assertIsNone(dialog.selected_format)
+
+
 class PreviewTests(ErgonomicsTestCase):
     def read_video(self, info, playlist=False):
         self.start_ready_app()
@@ -231,6 +477,11 @@ class PreviewTests(ErgonomicsTestCase):
         for part in ("Me at the zoo", "jawed", "0:19"):
             self.assertIn(part, preview)
         self.assertEqual(self.app.preview_label.winfo_manager(), "pack")
+
+    def test_estimated_size_is_shown(self):
+        preview = self.read_video(dict(VIDEO_INFO, filesize_approx=635110))
+        self.assertTrue(preview.endswith("· ~620,2 Ko"), preview)
+        self.assertNotIn("~", APP.build_preview_text(VIDEO_INFO, False))
 
     def test_playlist_preview(self):
         info = {"_type": "playlist", "title": "Mes favoris", "entries": [VIDEO_INFO, VIDEO_INFO, VIDEO_INFO]}

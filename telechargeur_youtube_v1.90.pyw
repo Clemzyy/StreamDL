@@ -62,8 +62,8 @@ from tools_manager import (
 # through PATH; child processes such as yt-dlp inherit this setting.
 os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
-APP_VERSION = "1.89"
-APP_TITLE = f"Téléchargeur Vidéo v{APP_VERSION} by Clemzy"
+APP_VERSION = "1.90"
+APP_TITLE = f"StreamDL v{APP_VERSION}"
 WINDOW_SIZE = "650x780"
 
 PROGRESS_UI_INTERVAL = 0.150
@@ -147,6 +147,7 @@ COOKIE_BROWSER_OPTIONS = [
     "Firefox",
     "Brave",
     "Opera",
+    "Opera GX",
 ]
 
 COOKIE_BROWSER_IDS = {
@@ -155,7 +156,26 @@ COOKIE_BROWSER_IDS = {
     "Firefox": "firefox",
     "Brave": "brave",
     "Opera": "opera",
+    "Opera GX": "operagx",
 }
+
+# Downloads kept in the Historique tab and in history.json.
+HISTORY_LIMIT = 100
+
+# Kinds of the format dialog's custom choice, in display order.
+FORMAT_KINDS = (
+    ("video", "Vidéo avec son"),
+    ("video_only", "Vidéo uniquement (sans son)"),
+    ("audio", "Audio uniquement"),
+)
+VIDEO_CODEC_NAMES = (
+    ("avc", "H.264"), ("h264", "H.264"), ("hev", "H.265"), ("hvc", "H.265"),
+    ("vp09", "VP9"), ("vp9", "VP9"), ("vp8", "VP8"), ("av01", "AV1"),
+)
+AUDIO_CODEC_NAMES = (
+    ("mp4a", "AAC"), ("aac", "AAC"), ("opus", "Opus"), ("vorbis", "Vorbis"),
+    ("mp3", "MP3"), ("flac", "FLAC"), ("ac-3", "AC-3"), ("ec-3", "E-AC-3"),
+)
 
 # Referenced by the official yt-dlp FAQ for a manual Netscape cookies.txt export.
 # This is intentionally a manual, opt-in fallback: the application never exports
@@ -277,11 +297,14 @@ THEME_BY_EXE_SUFFIX = {
 }
 
 
-def requested_theme():
+def requested_theme(saved=None):
     name = os.path.splitext(os.path.basename(get_launcher_path()))[0].lower()
     for suffix, theme in THEME_BY_EXE_SUFFIX.items():
         if name.endswith(suffix):
             return theme
+    # Chosen with a right-click: "Passer en mode sombre" or "clair".
+    if saved in ("light", "dark"):
+        return saved
     return DEFAULT_THEME
 
 
@@ -474,6 +497,36 @@ def apply_theme(root, requested="auto"):
     return mode
 
 
+def recolor_labels(window, old_colors, new_colors):
+    """Give the text color a ttk widget took from the old palette its new value.
+
+    Only ttk widgets: sv-ttk recolors the classic tk ones itself, and some of
+    its colors equal palette ones of the other theme.
+    """
+    # The palette's colors are all different: each one names a single role.
+    swaps = {
+        str(old_colors[key]).lower(): new_colors[key]
+        for key in old_colors
+        if key != "mode"
+    }
+    widgets = [window]
+
+    while widgets:
+        widget = widgets.pop()
+        widgets.extend(widget.winfo_children())
+
+        if not isinstance(widget, ttk.Widget):
+            continue
+
+        try:
+            value = str(widget.cget("foreground")).lower()
+        except tk.TclError:
+            continue
+
+        if value in swaps:
+            widget.configure(foreground=swaps[value])
+
+
 def format_duration(seconds):
     if not isinstance(seconds, (int, float)) or seconds <= 0:
         return ""
@@ -489,11 +542,15 @@ def build_preview_text(info, playlist_mode):
         count = len([entry for entry in info.get("entries") or [] if entry])
         return f"Playlist : {info.get('title') or 'sans titre'} · {count} vidéos"
 
-    parts = (
+    parts = [
         info.get("title"),
         info.get("uploader") or info.get("channel"),
         format_duration(info.get("duration")),
-    )
+    ]
+    # yt-dlp's estimate for the best quality, the one "Automatique" gets.
+    size = info.get("filesize") or info.get("filesize_approx")
+    if size:
+        parts.append("~" + human_size(size))
     return " · ".join(str(part) for part in parts if part)
 
 
@@ -617,11 +674,266 @@ def human_size(num):
     if num is None:
         return "?"
     value = float(num)
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
+    units = ("o", "Ko", "Mo", "Go", "To")
+    for unit in units[:-1]:
         if value < 1024:
-            return f"{value:.1f} {unit}"
+            break
         value /= 1024
-    return f"{value:.1f} PB"
+    else:
+        unit = units[-1]
+    return f"{value:.1f} {unit}".replace(".", ",")
+
+
+def estimated_size(fmt, duration=None):
+    """Size in bytes: exact, estimated by yt-dlp, or bitrate × duration."""
+    size = fmt.get("filesize") or fmt.get("filesize_approx")
+    if size:
+        return int(size)
+    bitrate = fmt.get("tbr")
+    if bitrate and duration:
+        # kbit/s -> bytes per second.
+        return int(bitrate * 125 * duration)
+    return None
+
+
+def codec_name(codec, names):
+    codec = (codec or "").lower()
+    return next((name for prefix, name in names if codec.startswith(prefix)), "")
+
+
+def video_choice_label(fmt, size, with_ext):
+    height = fmt.get("height")
+    parts = [
+        f"{height}p" if height
+        else fmt.get("format_note") or fmt.get("resolution") or f"Format {fmt['format_id']}"
+    ]
+    if fmt.get("fps"):
+        parts.append(f"{round(fmt['fps'])} i/s")
+    parts.append(codec_name(fmt.get("vcodec"), VIDEO_CODEC_NAMES))
+    if with_ext:
+        parts.append(fmt.get("ext"))
+    if size:
+        parts.append("~" + human_size(size))
+    return " · ".join(part for part in parts if part)
+
+
+def audio_choice_label(fmt, size):
+    bitrate = fmt.get("abr") or fmt.get("tbr")
+    parts = [
+        f"{round(bitrate)} kb/s" if bitrate
+        else fmt.get("format_note") or f"Format {fmt['format_id']}",
+        codec_name(fmt.get("acodec"), AUDIO_CODEC_NAMES),
+        fmt.get("ext"),
+    ]
+    if size:
+        parts.append("~" + human_size(size))
+    return " · ".join(part for part in parts if part)
+
+
+def format_choices(info):
+    """Formats offered by the format dialog, by kind, best first.
+
+    "video" has sound: a format with both, or a video-only format merged with
+    the best audio. Each choice is {"format": the -f value, "kind", "label",
+    "size", "ext"}; "auto_size" is the size of the automatic choice.
+    """
+    duration = info.get("duration")
+    formats = [
+        fmt for fmt in info.get("formats") or []
+        if fmt.get("format_id")
+        and fmt.get("ext") != "mhtml"
+        # DRC copies: the same audio with its loudness evened out.
+        and not str(fmt["format_id"]).endswith("-drc")
+    ]
+    # When yt-dlp knows the codecs of some formats, the others (HLS audio
+    # named "Default"...) can be neither described nor ranked.
+    described = [
+        fmt for fmt in formats
+        if fmt.get("vcodec") is not None and fmt.get("acodec") is not None
+    ]
+    if described:
+        formats = described
+
+    audio_formats = [
+        fmt for fmt in formats
+        if fmt.get("vcodec") == "none" and fmt.get("acodec") != "none"
+    ]
+    # yt-dlp lists the formats from the worst to the best.
+    best_audio_size = (
+        estimated_size(audio_formats[-1], duration) if audio_formats else None
+    )
+
+    candidates = {kind: [] for kind, _ in FORMAT_KINDS}
+
+    def add(kind, fmt, selector, size, label, ext):
+        candidates[kind].append((fmt, {
+            "format": selector,
+            "kind": kind,
+            "label": label,
+            "size": size,
+            "ext": ext,
+        }))
+
+    for fmt in formats:
+        format_id = str(fmt["format_id"])
+        size = estimated_size(fmt, duration)
+        has_video = fmt.get("vcodec") != "none"
+        has_audio = fmt.get("acodec") != "none"
+
+        if has_video and has_audio:
+            add("video", fmt, format_id, size, video_choice_label(fmt, size, False), fmt.get("ext"))
+
+        elif has_video:
+            add("video_only", fmt, format_id, size, video_choice_label(fmt, size, True), fmt.get("ext"))
+
+            if audio_formats:
+                merged = size + best_audio_size if size and best_audio_size else None
+                add("video", fmt, f"{format_id}+ba/{format_id}", merged,
+                    video_choice_label(fmt, merged, False), "mp4")
+
+        elif has_audio:
+            add("audio", fmt, format_id, size, audio_choice_label(fmt, size), fmt.get("ext"))
+
+    def preference(fmt):
+        # Same quality offered twice (HLS copy): the direct download wins.
+        return (
+            "m3u8" not in str(fmt.get("protocol") or ""),
+            bool(fmt.get("filesize")),
+            fmt.get("tbr") or 0,
+        )
+
+    choices = {"auto_size": info.get("filesize") or info.get("filesize_approx")}
+
+    for kind, _ in FORMAT_KINDS:
+        best = {}
+        for fmt, choice in candidates[kind]:
+            if kind == "audio":
+                key = (round(fmt.get("abr") or fmt.get("tbr") or 0), fmt.get("acodec"), fmt.get("ext"))
+            else:
+                key = (
+                    fmt.get("height"),
+                    round(fmt.get("fps") or 0),
+                    codec_name(fmt.get("vcodec"), VIDEO_CODEC_NAMES) or fmt.get("vcodec"),
+                )
+            if key not in best or preference(fmt) > preference(best[key][0]):
+                best[key] = (fmt, choice)
+
+        if kind == "audio":
+            rank = lambda fmt: (fmt.get("abr") or fmt.get("tbr") or 0,)
+        else:
+            rank = lambda fmt: (fmt.get("height") or 0, fmt.get("fps") or 0, fmt.get("tbr") or 0)
+
+        choices[kind] = [
+            choice for fmt, choice
+            in sorted(best.values(), key=lambda item: rank(item[0]), reverse=True)
+        ]
+
+    return choices
+
+
+def ytdlp_cookie_browser(browser):
+    # Opera GX keeps its profile beside Opera's: yt-dlp is given its folder.
+    if browser == "operagx":
+        app_data = os.environ.get("APPDATA")
+        if app_data:
+            return "opera:" + os.path.join(app_data, "Opera Software", "Opera GX Stable")
+        return "opera"
+    return browser
+
+
+def text_widget_selection(widget):
+    if isinstance(widget, tk.Text):
+        ranges = widget.tag_ranges("sel")
+        return widget.get(ranges[0], ranges[1]) if ranges else ""
+    if not widget.selection_present():
+        return ""
+    return widget.get()[widget.index("sel.first"):widget.index("sel.last")]
+
+
+def text_widget_editable(widget):
+    if isinstance(widget, ttk.Entry):
+        return not widget.instate(["disabled"]) and not widget.instate(["readonly"])
+    return str(widget.cget("state")) == "normal"
+
+
+def copy_selection(widget, cut=False):
+    text = text_widget_selection(widget)
+    if not text:
+        return
+    widget.clipboard_clear()
+    widget.clipboard_append(text)
+    if cut:
+        widget.delete("sel.first", "sel.last")
+
+
+def paste_clipboard(widget):
+    try:
+        text = widget.clipboard_get()
+    except tk.TclError:
+        return
+    if text_widget_selection(widget):
+        widget.delete("sel.first", "sel.last")
+    widget.insert("insert", text)
+
+
+def select_all_text(widget):
+    if isinstance(widget, tk.Text):
+        widget.tag_add("sel", "1.0", "end-1c")
+    else:
+        widget.select_range(0, "end")
+        widget.icursor("end")
+    widget.focus_set()
+
+
+def build_edit_menu(widget, extra_items=()):
+    editable = text_widget_editable(widget)
+    selected = bool(text_widget_selection(widget))
+    try:
+        clipboard_text = bool(widget.clipboard_get())
+    except tk.TclError:
+        clipboard_text = False
+
+    def state(enabled):
+        return "normal" if enabled else "disabled"
+
+    menu = tk.Menu(widget, tearoff=0)
+    menu.add_command(label="Couper", state=state(editable and selected),
+                     command=lambda: copy_selection(widget, cut=True))
+    menu.add_command(label="Copier", state=state(selected),
+                     command=lambda: copy_selection(widget))
+    menu.add_command(label="Coller", state=state(editable and clipboard_text),
+                     command=lambda: paste_clipboard(widget))
+    menu.add_separator()
+    menu.add_command(label="Tout sélectionner", command=lambda: select_all_text(widget))
+
+    if extra_items:
+        menu.add_separator()
+        for label, command in extra_items:
+            menu.add_command(label=label, command=command)
+
+    return menu
+
+
+def show_edit_menu(event, extra_items=()):
+    menu = build_edit_menu(event.widget, extra_items)
+    try:
+        menu.tk_popup(event.x_root, event.y_root)
+    finally:
+        menu.grab_release()
+    # The window's own right-click menu must not open as well.
+    return "break"
+
+
+def bind_edit_menus(root, extra_items=None):
+    """Right-click in any text field: Couper, Copier, Coller, Tout sélectionner.
+
+    extra_items(event) gives more (label, command) entries for the menu.
+    """
+    def on_right_click(event):
+        return show_edit_menu(event, extra_items(event) if extra_items else ())
+
+    for widget_class in ("TEntry", "Entry", "Text"):
+        root.bind_class(widget_class, "<Button-3>", on_right_click, add="+")
 
 
 def sha256_of_file(file_path, chunk_size=1024 * 1024):
@@ -679,163 +991,182 @@ def get_live_process_kwargs():
 
 
 class FormatSelector(tk.Toplevel):
-    def __init__(self, parent, formats_list, title_text):
+    """Automatic choice, or one format of a kind picked in a drop-down list."""
+
+    def __init__(self, parent, choices, title_text):
         super().__init__(parent)
         follow_theme_title_bar(self)
 
         self.title("Choisir un format")
-        self.geometry("1220x560")
-        self.resizable(True, True)
+        self.resizable(False, False)
 
         self.selected_format = None
-        self.formats_list = formats_list
+        self.choices = choices
+        # Kinds with at least one format, in display order.
+        self.kinds = [
+            (kind, label) for kind, label in FORMAT_KINDS
+            if choices.get(kind)
+        ]
+        self.mode_var = tk.StringVar(value="auto")
+        self.type_var = tk.StringVar()
 
         self.transient(parent)
-        self.grab_set()
-
         self.build_ui(title_text)
-        self.populate()
+        self.update_state()
+
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.bind("<Escape>", lambda event: self.cancel())
+        self.bind("<Return>", lambda event: self.choose_selected())
+        self.geometry(f"+{parent.winfo_rootx() + 60}+{parent.winfo_rooty() + 120}")
+
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass  # Not viewable (hidden parent): the dialog is just not modal.
 
     def build_ui(self, title_text):
-        top = tk.Frame(self)
-        top.pack(fill="x", padx=10, pady=(10, 6))
+        frame = ttk.Frame(self, padding=(18, 16))
+        frame.pack(fill="both", expand=True)
 
-        tk.Label(
-            top,
+        ttk.Label(
+            frame,
             text=title_text,
-            font=("Segoe UI", 10, "bold"),
-            anchor="w",
+            font=("Segoe UI", 11, "bold"),
+            wraplength=460,
             justify="left"
-        ).pack(fill="x")
+        ).pack(anchor="w")
 
-        tk.Label(
-            top,
-            text=(
-                "Conseils :\n"
-                "• ⭐ automatique = meilleure vidéo + meilleur audio\n"
-                "• combined = image + son\n"
-                "• video only = image sans son\n"
-                "• audio only = audio seul"
-            ),
-            justify="left",
-            anchor="w"
-        ).pack(fill="x", pady=(6, 0))
+        auto_text = "Automatique"
+        if self.choices.get("auto_size"):
+            auto_text += f" · ~{human_size(self.choices['auto_size'])}"
 
-        frame = tk.Frame(self)
-        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        self.auto_button = ttk.Radiobutton(
+            frame,
+            text=auto_text,
+            variable=self.mode_var,
+            value="auto",
+            command=self.update_state
+        )
+        self.auto_button.pack(anchor="w", pady=(14, 0))
 
-        columns = (
-            "id",
-            "type",
-            "ext",
-            "resolution",
-            "fps",
-            "audio",
-            "video",
-            "size",
-            "note"
+        ttk.Label(
+            frame,
+            text="Meilleure image et meilleur son, en MP4. "
+                 "Le bon choix dans la plupart des cas.",
+            foreground=palette["muted"],
+            wraplength=430,
+            justify="left"
+        ).pack(anchor="w", padx=(26, 0))
+
+        custom_button = ttk.Radiobutton(
+            frame,
+            text="Personnalisé",
+            variable=self.mode_var,
+            value="custom",
+            command=self.update_state
+        )
+        custom_button.pack(anchor="w", pady=(12, 0))
+
+        if not self.kinds:
+            custom_button.state(["disabled"])
+
+        custom = ttk.Frame(frame)
+        custom.pack(fill="x", padx=(26, 0), pady=(6, 0))
+        custom.grid_columnconfigure(1, weight=1)
+
+        ttk.Label(custom, text="Type").grid(row=0, column=0, sticky="w")
+
+        self.type_combo = ttk.Combobox(
+            custom,
+            textvariable=self.type_var,
+            values=[label for _, label in self.kinds],
+            state="readonly",
+            width=42
+        )
+        self.type_combo.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        self.type_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda event: self.fill_formats()
         )
 
-        self.tree = ttk.Treeview(frame, columns=columns, show="headings")
-
-        headings = {
-            "id": "Format ID",
-            "type": "Type",
-            "ext": "Ext",
-            "resolution": "Résolution",
-            "fps": "FPS",
-            "audio": "Audio",
-            "video": "Vidéo",
-            "size": "Taille",
-            "note": "Description",
-        }
-
-        widths = {
-            "id": 110,
-            "type": 160,
-            "ext": 70,
-            "resolution": 130,
-            "fps": 60,
-            "audio": 140,
-            "video": 170,
-            "size": 100,
-            "note": 420,
-        }
-
-        for col in columns:
-            self.tree.heading(col, text=headings[col])
-            self.tree.column(col, width=widths[col], anchor="center")
-
-        vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        hsb = ttk.Scrollbar(frame, orient="horizontal", command=self.tree.xview)
-
-        self.tree.configure(
-            yscrollcommand=vsb.set,
-            xscrollcommand=hsb.set
+        ttk.Label(custom, text="Format").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(8, 0)
         )
 
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
+        self.format_combo = ttk.Combobox(
+            custom,
+            state="readonly",
+            width=42
+        )
+        self.format_combo.grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            padx=(10, 0),
+            pady=(8, 0)
+        )
 
-        frame.grid_rowconfigure(0, weight=1)
-        frame.grid_columnconfigure(0, weight=1)
+        if self.kinds:
+            self.type_combo.current(0)
+            self.fill_formats()
 
-        btns = tk.Frame(self)
-        btns.pack(fill="x", padx=10, pady=(0, 10))
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(18, 0))
 
-        tk.Button(
-            btns,
+        ttk.Button(
+            buttons,
             text="Choisir",
-            width=14,
+            style="Accent.TButton",
+            width=12,
             command=self.choose_selected
         ).pack(side="right")
 
-        tk.Button(
-            btns,
+        ttk.Button(
+            buttons,
             text="Annuler",
-            width=14,
+            width=12,
             command=self.cancel
         ).pack(side="right", padx=(0, 8))
 
-        self.tree.bind("<Double-1>", lambda e: self.choose_selected())
+    def current_kind(self):
+        return next(
+            (kind for kind, label in self.kinds if label == self.type_var.get()),
+            None
+        )
 
-    def populate(self):
-        for f in self.formats_list:
-            self.tree.insert(
-                "",
-                "end",
-                values=(
-                    f["format_id"],
-                    f["type"],
-                    f["ext"],
-                    f["resolution"],
-                    f["fps"],
-                    f["audio"],
-                    f["video"],
-                    f["size"],
-                    f["note"],
-                ),
-            )
+    def fill_formats(self):
+        options = self.choices.get(self.current_kind()) or []
+        self.format_combo["values"] = [choice["label"] for choice in options]
 
-        children = self.tree.get_children()
+        if options:
+            self.format_combo.current(0)
 
-        if children:
-            self.tree.selection_set(children[0])
-            self.tree.focus(children[0])
+    def update_state(self):
+        state = "readonly" if self.mode_var.get() == "custom" else "disabled"
+        self.type_combo.config(state=state)
+        self.format_combo.config(state=state)
 
     def choose_selected(self):
-        sel = self.tree.selection()
+        if self.mode_var.get() == "auto":
+            self.selected_format = "BEST_AUTO"
 
-        if not sel:
-            messagebox.showerror(
-                "Erreur",
-                "Choisis un format dans la liste."
-            )
-            return
+        else:
+            options = self.choices.get(self.current_kind()) or []
+            index = self.format_combo.current()
 
-        values = self.tree.item(sel[0], "values")
-        self.selected_format = values[0]
+            if not 0 <= index < len(options):
+                messagebox.showerror(
+                    "Erreur",
+                    "Choisis un format dans la liste.",
+                    parent=self
+                )
+                return
+
+            self.selected_format = options[index]["format"]
+
         self.destroy()
 
     def cancel(self):
@@ -1100,7 +1431,13 @@ class App:
         self.root.withdraw()
 
         self.root.title(APP_TITLE)
-        apply_theme(self.root, requested_theme())
+        theme = requested_theme(
+            AppSettings(os.path.dirname(default_storage_dir())).get("theme")
+        )
+        apply_theme(self.root, theme)
+        # Light and dark can be swapped with a right-click on the Windows 11
+        # look only: the classic one has a single set of colors.
+        self.theme_switchable = sv_ttk is not None and theme != "native"
         follow_theme_title_bar(self.root)
         apply_app_icon(self.root)
         self.root.geometry(WINDOW_SIZE)
@@ -1143,6 +1480,10 @@ class App:
         self.choose_blocked_by_tools = False
         self.start_blocked_by_tools = False
         self.settings = AppSettings(os.path.dirname(self.tool_storage_dir))
+        self.history_path = os.path.join(
+            os.path.dirname(self.settings.path),
+            "history.json"
+        )
         self.folder_var.set(self.initial_download_folder())
         self.pending_preset = None
         self.current_process = None
@@ -1172,9 +1513,13 @@ class App:
 
         self.current_formats_list = []
         self.social_icon_images = []
+        self.social_buttons = []
 
         self.resolve_tools()
         self.build_ui()
+        bind_edit_menus(self.root, self.theme_menu_items)
+        self.root.bind("<Button-3>", self.show_window_menu, add="+")
+        self.load_history()
         self.render_tools_status()
         self.enable_choose_format_button()
         self.root.bind("<Activate>", self.auto_paste_clipboard, add="+")
@@ -1228,13 +1573,17 @@ class App:
                 if icon_image
                 else {"text": label}
             )
-            ttk.Button(
+            link_button = ttk.Button(
                 links_frame,
                 style="Toolbutton",
                 cursor="hand2",
                 command=lambda link=url: open_url(link),
                 **link_options
-            ).pack(side="left", padx=(2, 0))
+            )
+            link_button.pack(side="left", padx=(2, 0))
+
+            if icon_image:
+                self.social_buttons.append((icon_name, link_button))
 
         # ---- Vidéo: what to download.
         video_block = ttk.LabelFrame(
@@ -1588,14 +1937,14 @@ class App:
             height=3
         )
 
-        self.history_tree.heading("time", text="Heure")
+        self.history_tree.heading("time", text="Date")
         self.history_tree.heading("file", text="Fichier")
         self.history_tree.heading("conversion", text="Conversion")
         self.history_tree.heading("folder", text="Dossier")
 
         # Initial widths only: resize_history_columns() shares the real width.
-        self.history_tree.column("time", width=60, minwidth=45, stretch=True)
-        self.history_tree.column("file", width=180, minwidth=90, stretch=True)
+        self.history_tree.column("time", width=80, minwidth=70, stretch=True)
+        self.history_tree.column("file", width=160, minwidth=90, stretch=True)
         self.history_tree.column(
             "conversion",
             width=90,
@@ -1630,6 +1979,13 @@ class App:
             text="Ouvrir fichier",
             width=13,
             command=self.open_selected_history_file
+        ).pack(fill="x", pady=(6, 0))
+
+        ttk.Button(
+            history_buttons,
+            text="Vider",
+            width=13,
+            command=self.clear_history
         ).pack(fill="x", pady=(6, 0))
 
     def append_log(self, text, detail=False):
@@ -1943,13 +2299,13 @@ class App:
     def resize_history_columns(self, event):
         total_width = max(event.width - 8, 1)
         proportions = {
-            "time": 0.12,
-            "file": 0.36,
-            "conversion": 0.17,
+            "time": 0.16,
+            "file": 0.34,
+            "conversion": 0.15,
             "folder": 0.35,
         }
         minimums = {
-            "time": 45,
+            "time": 70,
             "file": 90,
             "conversion": 70,
             "folder": 90,
@@ -1989,11 +2345,8 @@ class App:
             return "audio"
 
         for item in self.current_formats_list:
-            if item["format_id"] == selected_format:
-                if item["type"] == "audio only":
-                    return "audio"
-
-                return "video"
+            if item["format"] == selected_format:
+                return "audio" if item["kind"] == "audio" else "video"
 
         return "video"
 
@@ -2022,7 +2375,7 @@ class App:
         if source.kind is CookieSourceKind.BROWSER and source.browser:
             options.extend([
                 "--cookies-from-browser",
-                source.browser,
+                ytdlp_cookie_browser(source.browser),
             ])
 
         elif source.kind is CookieSourceKind.FILE and source.file_path:
@@ -2257,17 +2610,83 @@ class App:
         )
 
         item = {
-            "time": time.strftime("%H:%M:%S"),
+            "time": time.strftime("%d/%m %H:%M"),
             "file": file_path or "(fichier non détecté)",
             "conversion": conversion_text,
             "folder": folder,
         }
 
         self.download_history.insert(0, item)
+        self.insert_history_row(item, 0)
 
+        for extra in self.history_tree.get_children()[HISTORY_LIMIT:]:
+            self.history_tree.delete(extra)
+        del self.download_history[HISTORY_LIMIT:]
+
+        self.update_history_tab()
+        self.save_history()
+
+    def theme_menu_items(self, event=None):
+        # Offered in the main window only: an open dialog keeps its colors.
+        if not self.theme_switchable:
+            return []
+
+        if event is not None and event.widget.winfo_toplevel() is not self.root:
+            return []
+
+        if palette["mode"] == "dark":
+            return [("Passer en mode clair", lambda: self.switch_theme("light"))]
+
+        return [("Passer en mode sombre", lambda: self.switch_theme("dark"))]
+
+    def show_window_menu(self, event):
+        items = self.theme_menu_items(event)
+
+        if not items:
+            return
+
+        menu = tk.Menu(self.root, tearoff=0)
+
+        for label, command in items:
+            menu.add_command(label=label, command=command)
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def switch_theme(self, mode):
+        old_colors = dict(palette)
+        apply_theme(self.root, mode)
+        recolor_labels(self.root, old_colors, palette)
+        self.log_box.configure(
+            background=palette["text_bg"],
+            foreground=palette["text_fg"],
+            insertbackground=palette["text_fg"],
+            highlightbackground=palette["border"],
+            highlightcolor=palette["border"]
+        )
+        self.log_box.tag_configure("detail", foreground=palette["detail"])
+
+        # The GitHub icon has a light version for the dark theme.
+        for icon_name, button in self.social_buttons:
+            icon_path = themed_asset(icon_name)
+
+            try:
+                icon_image = tk.PhotoImage(file=icon_path)
+            except (tk.TclError, TypeError):
+                continue
+
+            self.social_icon_images.append(icon_image)
+            button.configure(image=icon_image)
+
+        use_dark_title_bar(self.root, palette["mode"] == "dark")
+        self.settings.set("theme", palette["mode"])
+
+    def insert_history_row(self, item, position):
         self.history_tree.insert(
             "",
-            0,
+            position,
             values=(
                 item["time"],
                 os.path.basename(item["file"]),
@@ -2276,10 +2695,68 @@ class App:
             )
         )
 
+    def update_history_tab(self):
+        count = len(self.download_history)
         self.bottom_tabs.tab(
             self.history_tab,
-            text=f"Historique ({len(self.download_history)})"
+            text=f"Historique ({count})" if count else "Historique"
         )
+
+    def load_history(self):
+        # Kept between launches in history.json, newest first.
+        try:
+            with open(self.history_path, encoding="utf-8") as history_file:
+                entries = json.load(history_file)
+        except (OSError, ValueError):
+            entries = []
+
+        if not isinstance(entries, list):
+            entries = []
+
+        keys = ("time", "file", "conversion", "folder")
+        self.download_history = [
+            {key: entry[key] for key in keys}
+            for entry in entries
+            if isinstance(entry, dict)
+            and all(isinstance(entry.get(key), str) for key in keys)
+        ][:HISTORY_LIMIT]
+
+        for item in self.download_history:
+            self.insert_history_row(item, "end")
+
+        self.update_history_tab()
+
+    def save_history(self):
+        temporary_path = self.history_path + ".tmp"
+
+        try:
+            os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
+            with open(temporary_path, "w", encoding="utf-8") as history_file:
+                json.dump(
+                    self.download_history,
+                    history_file,
+                    ensure_ascii=False,
+                    indent=2
+                )
+            os.replace(temporary_path, self.history_path)
+
+        except OSError:
+            pass
+
+    def clear_history(self):
+        if not self.download_history:
+            return
+
+        if not messagebox.askyesno(
+            "Historique",
+            "Vider l'historique ? Les fichiers téléchargés sont conservés."
+        ):
+            return
+
+        self.download_history = []
+        self.history_tree.delete(*self.history_tree.get_children())
+        self.update_history_tab()
+        self.save_history()
 
     def get_selected_history_item(self):
         selection = self.history_tree.selection()
@@ -2667,11 +3144,12 @@ class App:
         return output_file
 
     def get_selected_format_ext(self, selected_format):
-        if selected_format == "BEST_AUTO":
+        # Video merged with an audio track: saved as MP4.
+        if selected_format == "BEST_AUTO" or "+" in selected_format:
             return ".mp4"
 
         for item in self.current_formats_list:
-            if item["format_id"] == selected_format:
+            if item["format"] == selected_format:
                 ext = item.get("ext") or ""
 
                 if ext and ext != "?":
@@ -2888,9 +3366,9 @@ class App:
         if selected_format == "BEST_AUDIO":
             return True
 
-        for f in formats_list:
-            if f["format_id"] == selected_format:
-                return f["type"] == "audio only"
+        for item in formats_list:
+            if item["format"] == selected_format:
+                return item["kind"] == "audio"
 
         return False
 
@@ -3004,6 +3482,13 @@ class App:
                 "-J",
                 "--yes-playlist" if playlist_mode else "--no-playlist",
             ]
+
+            # Without ffmpeg, yt-dlp would size a single lower-quality file
+            # instead of the merged best quality "Automatique" downloads.
+            ffmpeg_path = find_ffmpeg(self.tool_path("ffmpeg"))
+            if ffmpeg_path:
+                cmd.extend(["--ffmpeg-location", ffmpeg_path])
+
             cmd.extend(
                 self.build_ytdlp_runtime_options(cookie_source)
             )
@@ -3045,94 +3530,14 @@ class App:
                 if first_entry:
                     data = first_entry
 
-            formats_raw = data.get("formats", [])
             title = data.get("title", "(titre inconnu)")
-
-            parsed = [{
-                "format_id": "BEST_AUTO",
-                "type": "⭐ automatique",
-                "ext": "mp4",
-                "resolution": "max",
-                "fps": "-",
-                "audio": "best",
-                "video": "best",
-                "size": "?",
-                "note": "Meilleure qualité vidéo + audio",
-            }]
-
-            for f in formats_raw:
-                acodec = f.get("acodec")
-                vcodec = f.get("vcodec")
-
-                ext = f.get("ext", "?")
-                format_id = f.get("format_id", "?")
-
-                width = f.get("width")
-                height = f.get("height")
-
-                fps = f.get("fps") or ""
-
-                note = (
-                    f.get("format_note")
-                    or f.get("format")
-                    or ""
-                )
-
-                filesize = (
-                    f.get("filesize")
-                    or f.get("filesize_approx")
-                )
-
-                if vcodec != "none" and acodec != "none":
-                    ftype = "combined"
-
-                elif vcodec != "none" and acodec == "none":
-                    ftype = "video only"
-
-                elif vcodec == "none" and acodec != "none":
-                    ftype = "audio only"
-
-                else:
-                    ftype = "other"
-
-                resolution = (
-                    f"{width}x{height}"
-                    if width and height
-                    else (f.get("resolution") or "-")
-                )
-
-                parsed.append({
-                    "format_id": format_id,
-                    "type": ftype,
-                    "ext": ext,
-                    "resolution": resolution,
-                    "fps": fps,
-                    "audio": acodec if acodec else "-",
-                    "video": vcodec if vcodec else "-",
-                    "size": human_size(filesize),
-                    "note": note,
-                })
-
-            parsed_rest = parsed[1:]
-
-            parsed_rest.sort(
-                key=lambda x: (
-                    0 if x["type"] == "combined"
-                    else 1 if x["type"] == "video only"
-                    else 2 if x["type"] == "audio only"
-                    else 3,
-                    x["resolution"],
-                    x["ext"],
-                )
-            )
-
-            parsed = [parsed[0]] + parsed_rest
+            choices = format_choices(data)
 
             self.root.after(
                 0,
                 lambda: self.show_format_dialog(
                     url,
-                    parsed,
+                    choices,
                     title,
                     playlist_mode,
                     cookie_source,
@@ -3152,20 +3557,24 @@ class App:
     def show_format_dialog(
         self,
         url,
-        formats_list,
+        choices,
         title,
         playlist_mode,
         cookie_source,
         info_json=None,
     ):
-        self.current_formats_list = formats_list
+        self.current_formats_list = [
+            choice
+            for kind, _ in FORMAT_KINDS
+            for choice in choices.get(kind, [])
+        ]
 
         self.enable_choose_format_button()
 
         self.set_status("Choisis un format.")
 
         self.append_log(
-            f"{len(formats_list)} options détectées."
+            f"{len(self.current_formats_list)} formats détectés."
         )
 
         self.append_log(
@@ -3173,14 +3582,6 @@ class App:
         )
 
         self.offer_cookie_file_preference(cookie_source)
-
-        ffmpeg_path = find_ffmpeg(self.tool_path("ffmpeg"))
-
-        ffmpeg_msg = (
-            f"ffmpeg détecté : {ffmpeg_path}"
-            if ffmpeg_path
-            else "ffmpeg non détecté."
-        )
 
         preset = PRESETS.get(self.pending_preset)
 
@@ -3194,8 +3595,8 @@ class App:
         else:
             dlg = FormatSelector(
                 self.root,
-                formats_list,
-                f"Vidéo : {title}\n{ffmpeg_msg}"
+                choices,
+                f"Vidéo : {title}"
             )
 
             self.root.wait_window(dlg)
@@ -3342,7 +3743,7 @@ class App:
                 self.build_ytdlp_runtime_options(cookie_source)
             )
 
-            if selected_format == "BEST_AUTO":
+            if selected_format == "BEST_AUTO" or "+" in selected_format:
                 cmd.extend([
                     "--merge-output-format",
                     "mp4"
@@ -3767,11 +4168,8 @@ class App:
         try:
             digest = sha256_of_file(main_file)
 
-            hash_txt_path = os.path.join(
-                folder,
-                os.path.basename(main_file)
-                + ".sha256.txt"
-            )
+            # Beside the video, whatever folder it was saved in.
+            hash_txt_path = main_file + ".sha256.txt"
 
             with open(
                 hash_txt_path,

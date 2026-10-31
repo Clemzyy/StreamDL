@@ -71,7 +71,7 @@ def latest_source():
 class TextTests(unittest.TestCase):
     def test_title_shows_the_source_version(self):
         self.assertEqual(APP.APP_VERSION, re.search(r"_v(\d+\.\d+)", latest_source().name).group(1))
-        self.assertIn(f"v{APP.APP_VERSION}", APP.APP_TITLE)
+        self.assertEqual(APP.APP_TITLE, f"StreamDL v{APP.APP_VERSION}")
 
     def test_interface_texts_are_accented_and_informal(self):
         problems = []
@@ -159,6 +159,21 @@ class PresetTests(ErgonomicsTestCase):
         command = live.call_args.args[0]
         self.assertEqual(command[command.index("-f") + 1], "ba/b")
 
+    def test_preview_tells_ytdlp_where_ffmpeg_is(self):
+        # Without ffmpeg, yt-dlp sizes a single lower-quality file instead of
+        # the merged best quality that "Automatique" downloads.
+        self.start_ready_app()
+        self.app.url_var.set("https://www.youtube.com/watch?v=jNQXAC9IVRw")
+        info = json.dumps({"title": "Me at the zoo", "formats": []})
+        with mock.patch.object(APP.App, "run_command_json", return_value=(0, info, "")) as fetch, \
+                mock.patch.object(APP.App, "download_worker") as worker:
+            self.app.start_preset("video")
+            self.pump_until(lambda: worker.called)
+        command = fetch.call_args.args[0]
+        self.assertEqual(command[command.index("--ffmpeg-location") + 1],
+                         APP.find_ffmpeg(self.app.tool_path("ffmpeg")))
+        self.assertLess(command.index("--ffmpeg-location"), command.index("--"))
+
     def test_preview_json_is_handed_to_the_download(self):
         self.run_preset("video")
         self.assertEqual(json.loads(self.worker_kwargs["info_json"])["title"], "Me at the zoo")
@@ -240,6 +255,132 @@ class PreviewReuseTests(ErgonomicsTestCase):
 
         self.download([cancel])
         self.assertEqual(len(self.commands), 1)
+
+
+class EditMenuTests(ErgonomicsTestCase):
+    def setUp(self):
+        super().setUp()
+        # A fake clipboard: the tests never touch the real one.
+        self.clipboard = ["https://youtu.be/collé"]
+
+        def clipboard_get(widget, **kwargs):
+            return self.clipboard[0]
+
+        def clipboard_clear(widget, **kwargs):
+            self.clipboard[0] = ""
+
+        def clipboard_append(widget, text, **kwargs):
+            self.clipboard[0] += text
+
+        for name, value in (("clipboard_get", clipboard_get), ("clipboard_clear", clipboard_clear),
+                            ("clipboard_append", clipboard_append)):
+            patcher = mock.patch.object(APP.tk.Misc, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def items(self, widget):
+        menu = APP.build_edit_menu(widget)
+        return {
+            menu.entrycget(index, "label"): (menu, index)
+            for index in range(menu.index("end") + 1)
+            if menu.type(index) == "command"
+        }
+
+    def state(self, item):
+        menu, index = item
+        return str(menu.entrycget(index, "state"))
+
+    def invoke(self, widget, label):
+        menu, index = self.items(widget)[label]
+        menu.invoke(index)
+
+    def test_menu_has_the_usual_edit_commands(self):
+        self.start_ready_app()
+        self.assertEqual(list(self.items(self.app.url_entry)),
+                         ["Couper", "Copier", "Coller", "Tout sélectionner"])
+
+    def test_right_click_opens_it_in_every_text_field(self):
+        self.start_ready_app()
+        for widget_class in ("TEntry", "Text"):
+            self.assertTrue(self.root.bind_class(widget_class, "<Button-3>"), widget_class)
+        event = mock.Mock(widget=self.app.url_entry, x_root=10, y_root=20)
+        with mock.patch.object(APP.tk.Menu, "tk_popup") as popup:
+            APP.show_edit_menu(event)
+        popup.assert_called_once_with(10, 20)
+
+    def test_paste_replaces_the_selection(self):
+        self.start_ready_app()
+        self.app.url_var.set("ancien lien")
+        self.app.url_entry.select_range(0, "end")
+        self.invoke(self.app.url_entry, "Coller")
+        self.assertEqual(self.app.url_var.get(), "https://youtu.be/collé")
+
+    def test_cut_and_copy_need_a_selection(self):
+        self.start_ready_app()
+        self.app.folder_var.set(r"C:\Vidéos")
+        self.app.folder_entry.selection_clear()
+        items = self.items(self.app.folder_entry)
+        self.assertEqual((self.state(items["Couper"]), self.state(items["Copier"])), ("disabled", "disabled"))
+        self.app.folder_entry.select_range(0, "end")
+        self.invoke(self.app.folder_entry, "Couper")
+        self.assertEqual((self.clipboard[0], self.app.folder_var.get()), (r"C:\Vidéos", ""))
+
+    def test_select_all(self):
+        self.start_ready_app()
+        self.app.url_var.set("https://youtu.be/x")
+        self.invoke(self.app.url_entry, "Tout sélectionner")
+        self.assertEqual(APP.text_widget_selection(self.app.url_entry), "https://youtu.be/x")
+
+    def test_journal_can_only_be_copied(self):
+        self.start_ready_app()
+        self.app.log_box.tag_add("sel", "1.0", "1.9")
+        items = self.items(self.app.log_box)
+        self.assertEqual((self.state(items["Couper"]), self.state(items["Coller"])), ("disabled", "disabled"))
+        self.invoke(self.app.log_box, "Copier")
+        self.assertEqual(self.clipboard[0], self.app.log_box.get("1.0", "1.9"))
+
+
+class OperaGXTests(ErgonomicsTestCase):
+    def runtime_cookie_argument(self, browser):
+        self.start_ready_app()
+        self.app.cookies_browser_var.set(browser)
+        with mock.patch.dict(APP.os.environ, {"APPDATA": r"C:\Users\x\AppData\Roaming"}):
+            options = self.app.build_ytdlp_runtime_options(self.app.cookie_source_from_main_ui())
+        return options[options.index("--cookies-from-browser") + 1]
+
+    def test_opera_gx_cookies_come_from_its_own_profile(self):
+        self.assertIn("Opera GX", APP.COOKIE_BROWSER_OPTIONS)
+        self.assertEqual(self.runtime_cookie_argument("Opera GX"),
+                         r"opera:C:\Users\x\AppData\Roaming\Opera Software\Opera GX Stable")
+
+    def test_classic_opera_is_unchanged(self):
+        self.assertEqual(self.runtime_cookie_argument("Opera"), "opera")
+
+
+class CustomFormatDownloadTests(ErgonomicsTestCase):
+    def test_video_merged_with_the_best_audio_is_saved_as_mp4(self):
+        self.start_ready_app()
+        with mock.patch.object(APP.App, "run_command_live", return_value=(1, "ERROR: test")) as live, \
+                mock.patch.object(APP.App, "on_download_error"):
+            self.app.download_worker("https://youtu.be/x", str(self.downloads), "134+ba/134",
+                                     False, "x", APP.CookieSource.none())
+        command = live.call_args.args[0]
+        self.assertEqual(command[command.index("-f") + 1], "134+ba/134")
+        self.assertEqual(command[command.index("--merge-output-format") + 1], "mp4")
+        self.assertEqual(self.app.get_selected_format_ext("134+ba/134"), ".mp4")
+        self.assertEqual(self.app.get_selected_format_kind("134+ba/134"), "video")
+
+
+class Sha256Tests(ErgonomicsTestCase):
+    def test_sha256_file_is_written_next_to_the_video(self):
+        self.start_ready_app()
+        video = self.downloads / "Sous-dossier" / "Me at the zoo.mp4"
+        video.parent.mkdir()
+        video.write_bytes(b"video")
+        with mock.patch.object(self.app, "on_hash_success") as done:
+            self.app.hash_worker(str(video), str(self.downloads))
+            self.pump_until(lambda: done.called)
+        self.assertTrue((video.parent / "Me at the zoo.mp4.sha256.txt").is_file())
 
 
 class CancelTests(ErgonomicsTestCase):

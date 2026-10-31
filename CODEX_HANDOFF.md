@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.89.pyw
-  current_app_label: "Téléchargeur Vidéo v1.89 by Clemzy (APP_VERSION follows the source number)"
-  next_source_version: "1.90"
+  current_source: telechargeur_youtube_v1.90.pyw
+  current_app_label: "StreamDL v1.90 (window title; APP_VERSION follows the source number)"
+  next_source_version: "1.91"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -43,8 +43,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.87.pyw: thème imposé par le nom de l'exe (copies de test)
     - telechargeur_youtube_v1.88.pyw: clair par défaut, fenêtre affichée une seule fois
     - telechargeur_youtube_v1.89.pyw: yt-dlp en version dossier, téléchargement depuis le JSON de l'aperçu
+    - telechargeur_youtube_v1.90.pyw: retours d'un ami (clic droit, formats, tailles, historique, Opera GX), thème au clic droit
   files_expected:
-    - telechargeur_youtube_v1.89.pyw
+    - telechargeur_youtube_v1.90.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
@@ -309,15 +310,40 @@ VERSION_1_89_CHANGE:
     exceeds Windows' 260-character limit and the yt-dlp install fails (FileNotFoundError). The real
     %LOCALAPPDATA%\StreamDL\tools path is far below that.
 
-PENDING_FEEDBACK_V1_90 (from a friend using an older version, to triage against 1.89):
-  - Right-click menu in text fields: Couper / Copier / Coller / Tout sélectionner.
-  - Cookies from Opera GX are not read automatically (manual cookies.txt export works well).
-  - Format choice in sections: "Automatique" or "Personnalisé" with drop-downs for video+audio,
-    video only, audio only.
-  - Estimated file size before downloading.
-  - "L'historique ne fonctionne pas" (check against the Historique tab added in 1.86).
-  - The SHA-256 file is not saved next to the video.
+VERSION_1_90_CHANGE (feedback from a friend using an older version):
+  - Window title "StreamDL v1.90" (was "Téléchargeur Vidéo v1.89 by Clemzy").
+  - Right-click in every text field (class bindings TEntry/Entry/Text, bind_edit_menus):
+    Couper / Copier / Coller / Tout sélectionner, greyed out when they do not apply (read-only
+    journal: copy only). Tests use a fake clipboard: never touch the real one.
+  - Right-click anywhere in the main window (root <Button-3>, and at the end of the text-field
+    menu): "Passer en mode sombre" / "Passer en mode clair". switch_theme() re-applies sv-ttk,
+    recolors the ttk labels that took palette colors (recolor_labels: ttk widgets only, since
+    sv-ttk's own background #1c1c1c equals the light palette's text color), the journal, the GitHub
+    icon and the title bar, and saves settings["theme"]. Startup order: exe name suffix, then the
+    saved theme, then light. Not offered with the classic look (-natif / no sv-ttk).
+  - Format dialog rewritten (FormatSelector): "Automatique" (with its size) or "Personnalisé" with
+    a Type list (Vidéo avec son / Vidéo uniquement (sans son) / Audio uniquement) and a Format list.
+    format_choices(info) builds them from yt-dlp's -J: "Vidéo avec son" = combined formats plus
+    video-only ones merged with the best audio ("137+ba/137", saved as MP4); storyboards, DRC
+    audio copies and formats with unknown codecs are left out; HLS copies of the same quality
+    lose to the direct download. Labels: "1080p · 60 i/s · H.264 · ~245,7 Mo", "129 kb/s · AAC ·
+    m4a · ~9,8 Mo". current_formats_list holds these choices ({"format", "kind", "label", "size",
+    "ext"}).
+  - Sizes in French units (human_size: o, Ko, Mo, Go); estimated_size() uses filesize, then
+    filesize_approx, then bitrate x duration. The preview line ends with "~<size>" for the
+    automatic choice. The -J call now gets --ffmpeg-location: without it yt-dlp sized a single
+    360p file (27 MB) instead of the 2160p + audio merge (743 MB) actually downloaded.
+  - History kept between launches in history.json (beside settings.json, 100 entries, newest
+    first, damaged file ignored), dates "31/10 13:05", "Vider" button (asks first; files kept).
+  - Opera GX: cookies read from %APPDATA%\Opera Software\Opera GX Stable ("opera:<path>").
+    Not tested for real: Opera GX is not installed on the dev PC.
+  - SHA-256: the code already wrote <video>.sha256.txt in the download folder; it is now written
+    beside the video itself. Checked for real (file next to the MP4).
   - Default download folder: already done in 1.85 (Windows Downloads folder).
+  - Real test (hidden window): "Vidéo avec son" first choice -> MP4 with h264 + audio tracks,
+    .sha256.txt beside it, history.json written. Captures of the dialog and the runtime dark
+    switch checked; the dark title bar attribute reads 1 after the switch (PrintWindow of a
+    transparent window does not draw it).
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc
