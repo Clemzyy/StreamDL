@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.85.pyw
-  current_app_label: "Téléchargeur Vidéo v1.85 by Clemzy (APP_VERSION follows the source number)"
-  next_source_version: "1.86"
+  current_source: telechargeur_youtube_v1.86.pyw
+  current_app_label: "Téléchargeur Vidéo v1.86 by Clemzy (APP_VERSION follows the source number)"
+  next_source_version: "1.87"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -39,8 +39,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.83.pyw: messages d'erreur des workers qui ne bloquent plus l'interface
     - telechargeur_youtube_v1.84.pyw: exe léger Nuitka, outils téléchargés au premier lancement
     - telechargeur_youtube_v1.85.pyw: ergonomie (raccourcis MP4/MP3, Annuler, dossier retenu, journal)
+    - telechargeur_youtube_v1.86.pyw: présentation Windows 11 (sv-ttk clair/sombre, blocs, aperçu)
   files_expected:
-    - telechargeur_youtube_v1.85.pyw
+    - telechargeur_youtube_v1.86.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
@@ -48,6 +49,8 @@ REPO_STATE:
     - test_app_tools_ui.py
     - test_build_exe.py
     - test_app_ergonomics.py
+    - test_app_presentation.py
+    - social_github_dark.png (light GitHub mark used on the dark theme)
     - build_exe.py
     - social_github.png
     - yt-dlp.exe
@@ -244,6 +247,23 @@ VERSION_1_85_CHANGE:
   - Journal: raw yt-dlp/ffmpeg lines tagged "detail" (Tk elide), shown with « Afficher les détails
     techniques ». History reduced to 3 rows and spacing tightened so the journal keeps ~4 lines.
   - Tests: test_app_ergonomics.py (18 tests, hidden window; the cancel test runs a fake yt-dlp).
+
+VERSION_1_86_CHANGE:
+  - Windows 11 look with sv-ttk 2.6 (MIT, 82 KB, added to requirements.txt): light or dark like
+    the Windows setting (HKCU ...\Themes\Personalize AppsUseLightTheme), dark title bar through
+    DwmSetWindowAttribute(20/19). Without sv-ttk the app starts with the classic light look.
+  - apply_theme() calls sv-ttk's configure_colors itself: its <<ThemeChanged>> binding never fires
+    for a window not shown yet, which left grey backgrounds (covered by a test).
+  - PALETTES (light/dark Fluent colors) for what the theme does not draw: muted text, success,
+    warning, journal colors; status colors and the dialogs' explicit colors use them.
+  - Main window rebuilt with ttk widgets in three blocks: Vidéo (link, preview, playlist, cookies),
+    Format (accent shortcuts, « Format avancé... », conversion options folded by default and
+    unfolded after an advanced choice), Destination (folder, SHA-256).
+  - Preview « titre · chaîne · durée » (or « Playlist : titre · N vidéos ») from the -J reading.
+  - Journal and Historique are tabs at the bottom (tab text counts downloads), so the journal keeps
+    about 6 lines at 650x780. App icon set as default icon for every dialog.
+  - build_exe.py: --include-package-data=sv_ttk (Nuitka), --collect-data sv_ttk (PyInstaller).
+  - Tests: test_app_presentation.py (17 tests).
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc

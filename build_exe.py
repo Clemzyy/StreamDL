@@ -98,6 +98,8 @@ def nuitka_arguments(source: Path, full: bool, output_dir: Path) -> list[str]:
         + build_id(files + source_files(source), toolchain_id()),
         "--windows-console-mode=disable",
         "--enable-plugin=tk-inter",
+        # Windows 11 theme files (Tcl scripts and images).
+        "--include-package-data=sv_ttk",
         "--msvc=latest",
         f"--windows-icon-from-ico={PROJECT_DIR / 'download.ico'}",
         "--company-name=Clemzy",
@@ -123,6 +125,7 @@ def pyinstaller_arguments(source: Path, full: bool) -> list[str]:
         "--noupx",
         "--clean",
         "--noconfirm",
+        "--collect-data", "sv_ttk",
         "--icon", str(PROJECT_DIR / "download.ico"),
         "--distpath", str(PROJECT_DIR / "dist"),
         "--workpath", str(WORK_DIR / "pyinstaller"),

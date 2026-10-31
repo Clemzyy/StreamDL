@@ -8,9 +8,16 @@ import threading
 import subprocess
 import time
 import webbrowser
+import ctypes
 from dataclasses import replace
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+
+try:
+    import sv_ttk
+except ImportError:
+    # Running from source without it: the classic Tk look is used.
+    sv_ttk = None
 
 from auth_support import (
     AuthErrorDetector,
@@ -54,7 +61,7 @@ from tools_manager import (
 # through PATH; child processes such as yt-dlp inherit this setting.
 os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
-APP_VERSION = "1.85"
+APP_VERSION = "1.86"
 APP_TITLE = f"Téléchargeur Vidéo v{APP_VERSION} by Clemzy"
 WINDOW_SIZE = "650x780"
 
@@ -83,8 +90,31 @@ PRESETS = {
     },
 }
 
-SUCCESS_COLOR = "#1E7B34"
-CANCEL_COLOR = "#8A5200"
+# Windows 11 (Fluent) colors for what the theme does not draw itself.
+PALETTES = {
+    "light": {
+        "mode": "light",
+        "muted": "#5f5f5f",
+        "success": "#0f7b0f",
+        "warning": "#9d5d00",
+        "detail": "#7a7a7a",
+        "text_bg": "#ffffff",
+        "text_fg": "#1c1c1c",
+        "border": "#e5e5e5",
+    },
+    "dark": {
+        "mode": "dark",
+        "muted": "#a6a6a6",
+        "success": "#6ccb5f",
+        "warning": "#fce100",
+        "detail": "#8a8a8a",
+        "text_bg": "#2b2b2b",
+        "text_fg": "#f3f3f3",
+        "border": "#3a3a3a",
+    },
+}
+# Colors of the current theme, set by apply_theme().
+palette = dict(PALETTES["light"])
 
 # Files written by yt-dlp, removed if the download is cancelled.
 YTDLP_OUTPUT_RES = (
@@ -342,6 +372,93 @@ def find_asset(filename):
     return None
 
 
+def windows_prefers_dark():
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        return value == 0
+    except (ImportError, OSError):
+        return False
+
+
+def use_dark_title_bar(window, dark):
+    # Windows draws the title bar itself: it follows the theme only on request.
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        value = ctypes.c_int(1 if dark else 0)
+        # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 on Windows 11, 19 on older Windows 10.
+        for attribute in (20, 19):
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                attribute,
+                ctypes.byref(value),
+                ctypes.sizeof(value)
+            ) == 0:
+                break
+    except (AttributeError, OSError):
+        pass
+
+
+def apply_theme(root):
+    """Windows 11 look (sv-ttk), light or dark like the Windows setting."""
+    mode = "dark" if sv_ttk is not None and windows_prefers_dark() else "light"
+    palette.clear()
+    palette.update(PALETTES[mode])
+
+    if sv_ttk is not None:
+        sv_ttk.set_theme(mode, root)
+        # sv-ttk applies its background colors on <<ThemeChanged>>, an event
+        # a window never shown yet does not receive: apply them right away.
+        try:
+            root.tk.call("configure_colors")
+        except tk.TclError:
+            pass
+        use_dark_title_bar(root, mode == "dark")
+
+    return mode
+
+
+def format_duration(seconds):
+    if not isinstance(seconds, (int, float)) or seconds <= 0:
+        return ""
+    hours, rest = divmod(int(round(seconds)), 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def build_preview_text(info, playlist_mode):
+    if playlist_mode and info.get("_type") == "playlist":
+        count = len([entry for entry in info.get("entries") or [] if entry])
+        return f"Playlist : {info.get('title') or 'sans titre'} · {count} vidéos"
+
+    parts = (
+        info.get("title"),
+        info.get("uploader") or info.get("channel"),
+        format_duration(info.get("duration")),
+    )
+    return " · ".join(str(part) for part in parts if part)
+
+
+def themed_asset(filename):
+    # A "<name>_dark" variant, when present, replaces the icon on the dark theme.
+    if palette["mode"] == "dark":
+        stem, extension = os.path.splitext(filename)
+        dark_path = find_asset(f"{stem}_dark{extension}")
+        if dark_path:
+            return dark_path
+    return find_asset(filename)
+
+
 def apply_app_icon(root):
     icon_path = find_app_icon()
 
@@ -350,7 +467,8 @@ def apply_app_icon(root):
 
     try:
         if icon_path.lower().endswith(".ico"):
-            root.iconbitmap(icon_path)
+            # Default icon: the dialog windows get it too.
+            root.iconbitmap(default=icon_path)
 
         else:
             icon_image = tk.PhotoImage(file=icon_path)
@@ -515,6 +633,7 @@ def get_live_process_kwargs():
 class FormatSelector(tk.Toplevel):
     def __init__(self, parent, formats_list, title_text):
         super().__init__(parent)
+        use_dark_title_bar(self, palette["mode"] == "dark")
 
         self.title("Choisir un format")
         self.geometry("1220x560")
@@ -681,6 +800,7 @@ class AuthenticationAssistant(tk.Toplevel):
 
     def __init__(self, parent, error_info, firefox_path, remembered_cookie_path, callbacks):
         super().__init__(parent)
+        use_dark_title_bar(self, palette["mode"] == "dark")
         self.error_info = error_info
         self.firefox_path = firefox_path
         self.remembered_cookie_path = remembered_cookie_path
@@ -739,7 +859,7 @@ class AuthenticationAssistant(tk.Toplevel):
                 "Si tu es connecté au site dans Firefox, yt-dlp utilisera temporairement "
                 "les cookies de cette session. Aucune copie n'est conservée."
             ),
-            fg="#555555",
+            fg=palette["muted"],
             anchor="w",
             justify="left",
             wraplength=555,
@@ -758,7 +878,7 @@ class AuthenticationAssistant(tk.Toplevel):
                 "dossier de téléchargement Chrome ci-dessous, puis choisis le fichier. "
                 "Préfère Firefox si possible et n'utilise cette méthode que sur ton ordinateur personnel."
             ),
-            fg="#8A5200",
+            fg=palette["warning"],
             anchor="w",
             justify="left",
             wraplength=555,
@@ -909,7 +1029,13 @@ class AuthenticationAssistant(tk.Toplevel):
             f"Source de cookies : {source}\n\n"
             f"Message yt-dlp :\n{technical}"
         )
-        self.details_box = tk.Text(self, height=13, wrap="word")
+        self.details_box = tk.Text(
+            self,
+            height=13,
+            wrap="word",
+            background=palette["text_bg"],
+            foreground=palette["text_fg"]
+        )
         self.details_box.pack(fill="both", expand=True, padx=18, pady=(0, 14))
         self.details_box.insert("1.0", details)
         self.details_box.config(state="disabled")
@@ -922,6 +1048,7 @@ class App:
         self.root = root
 
         self.root.title(APP_TITLE)
+        apply_theme(self.root)
         apply_app_icon(self.root)
         self.root.geometry(WINDOW_SIZE)
         self.root.resizable(True, True)
@@ -970,6 +1097,8 @@ class App:
         self.last_result_file = None
         self.last_result_folder = None
         self.show_details_var = tk.BooleanVar(value=False)
+        self.preview_var = tk.StringVar()
+        self.conversion_options_visible = False
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_application_close)
 
@@ -1001,30 +1130,30 @@ class App:
         )
 
     def build_ui(self):
-        pad = {"padx": 12, "pady": 8}
+        block_padding = (12, 4, 12, 10)
 
-        top_bar = tk.Frame(self.root)
-        top_bar.pack(fill="x", padx=12, pady=(8, 2))
+        top_bar = ttk.Frame(self.root)
+        top_bar.pack(fill="x", padx=12, pady=(8, 4))
 
-        tk.Label(
+        ttk.Label(
             top_bar,
             textvariable=self.tools_status_var,
-            fg="#666666",
+            foreground=palette["muted"],
             anchor="w"
         ).pack(side="left")
 
         # Shown only when a first-launch installation failed.
-        self.tools_retry_btn = tk.Button(
+        self.tools_retry_btn = ttk.Button(
             top_bar,
             text="Réessayer",
             command=self.start_tools_worker
         )
 
-        links_frame = tk.Frame(top_bar)
+        links_frame = ttk.Frame(top_bar)
         links_frame.pack(side="right")
 
         for label, icon_name, url in SOCIAL_LINKS:
-            icon_path = find_asset(icon_name)
+            icon_path = themed_asset(icon_name)
             icon_image = None
 
             if icon_path:
@@ -1035,64 +1164,72 @@ class App:
                 except Exception:
                     icon_image = None
 
-            button = tk.Button(
-                links_frame,
-                image=icon_image,
-                text="" if icon_image else label,
-                width=28 if icon_image else 10,
-                height=28 if icon_image else 1,
-                command=lambda link=url: open_url(link),
-                relief="flat",
-                cursor="hand2"
+            link_options = (
+                {"image": icon_image}
+                if icon_image
+                else {"text": label}
             )
+            ttk.Button(
+                links_frame,
+                style="Toolbutton",
+                cursor="hand2",
+                command=lambda link=url: open_url(link),
+                **link_options
+            ).pack(side="left", padx=(2, 0))
 
-            button.pack(side="left", padx=(4, 0))
-
-        tk.Label(
+        # ---- Vidéo: what to download.
+        video_block = ttk.LabelFrame(
             self.root,
-            text="URL de la vidéo :",
-            anchor="w"
-        ).pack(fill="x", **pad)
-
-        url_frame = tk.Frame(self.root)
-        url_frame.pack(fill="x", padx=12)
-
-        self.url_entry = tk.Entry(
-            url_frame,
-            textvariable=self.url_var,
-            font=("Segoe UI", 10)
+            text="Vidéo",
+            padding=block_padding
         )
+        video_block.pack(fill="x", padx=12, pady=(0, 6))
 
+        self.url_frame = ttk.Frame(video_block)
+        self.url_frame.pack(fill="x")
+
+        ttk.Label(self.url_frame, text="Lien :").pack(side="left")
+
+        self.url_entry = ttk.Entry(
+            self.url_frame,
+            textvariable=self.url_var
+        )
         self.url_entry.pack(
             side="left",
             fill="x",
-            expand=True
+            expand=True,
+            padx=(8, 0)
         )
-
         self.url_entry.focus_set()
         self.url_entry.bind("<Return>", self.on_url_return)
 
-        tk.Button(
-            url_frame,
+        ttk.Button(
+            self.url_frame,
             text="Coller",
-            width=10,
+            width=8,
             command=self.paste_clipboard
         ).pack(side="left", padx=(8, 0))
 
-        tk.Checkbutton(
-            self.root,
+        # Title, channel and duration once the video has been read.
+        self.preview_label = ttk.Label(
+            video_block,
+            textvariable=self.preview_var,
+            font=("Segoe UI Semibold", 10),
+            anchor="w"
+        )
+
+        ttk.Checkbutton(
+            video_block,
             text="Autoriser le téléchargement d'une playlist complète",
             variable=self.playlist_mode_var
-        ).pack(fill="x", padx=12, pady=(6, 0))
+        ).pack(fill="x", pady=(8, 0))
 
-        self.cookies_frame = tk.Frame(self.root)
-        self.cookies_frame.pack(fill="x", padx=12, pady=(4, 0))
+        self.cookies_frame = ttk.Frame(video_block)
+        self.cookies_frame.pack(fill="x", pady=(6, 0))
 
-        tk.Label(
+        ttk.Label(
             self.cookies_frame,
-            text="Cookies YouTube :",
-            width=18,
-            anchor="w"
+            text="Cookies YouTube :"
         ).pack(side="left")
 
         self.cookies_browser_combo = ttk.Combobox(
@@ -1100,41 +1237,41 @@ class App:
             textvariable=self.cookies_browser_var,
             values=COOKIE_BROWSER_OPTIONS,
             state="readonly",
-            width=22
+            width=10
         )
         self.cookies_browser_combo.pack(side="left", padx=(8, 0))
         self.cookies_browser_combo.current(0)
 
-        tk.Button(
+        ttk.Button(
             self.cookies_frame,
             text="Aide à l'authentification",
             command=self.open_authentication_assistant_manually,
-        ).pack(side="left", padx=(12, 0))
+        ).pack(side="left", padx=(8, 0))
 
-        tk.Label(
-            self.root,
+        ttk.Label(
+            video_block,
             text="Choisis ton navigateur seulement si YouTube demande une connexion.",
-            fg="#666666",
+            foreground=palette["muted"],
             anchor="w"
-        ).pack(fill="x", padx=12)
+        ).pack(fill="x", pady=(2, 0))
 
-        button_style = ttk.Style()
-        button_style.configure(
-            "Primary.TButton",
-            font=("Segoe UI", 10, "bold"),
-            padding=(18, 8)
+        # ---- Format: one click for the usual cases.
+        format_block = ttk.LabelFrame(
+            self.root,
+            text="Format",
+            padding=block_padding
         )
+        format_block.pack(fill="x", padx=12, pady=(0, 6))
 
-        # One click for the usual cases; « Format avancé... » keeps the full list.
-        self.actions_frame = tk.Frame(self.root)
-        self.actions_frame.pack(padx=12, pady=(8, 4))
+        self.actions_frame = ttk.Frame(format_block)
+        self.actions_frame.pack()
 
         self.video_preset_btn = ttk.Button(
             self.actions_frame,
             text="Vidéo MP4",
             command=lambda: self.start_preset("video"),
-            style="Primary.TButton",
-            width=14
+            style="Accent.TButton",
+            width=13
         )
         self.video_preset_btn.pack(side="left")
 
@@ -1142,120 +1279,119 @@ class App:
             self.actions_frame,
             text="Audio MP3",
             command=lambda: self.start_preset("audio"),
-            style="Primary.TButton",
-            width=14
+            style="Accent.TButton",
+            width=13
         )
         self.audio_preset_btn.pack(side="left", padx=(8, 0))
 
+        # « Format avancé... » keeps the full list of formats.
         self.choose_format_btn = ttk.Button(
             self.actions_frame,
             text="Format avancé...",
             command=self.choose_format_flow,
-            width=16
+            width=15
         )
-        self.choose_format_btn.pack(side="left", padx=(8, 0), ipady=4)
+        self.choose_format_btn.pack(side="left", padx=(8, 0))
 
-        audio_options_frame = tk.Frame(self.root)
-        audio_options_frame.pack(fill="x", padx=12, pady=(8, 0))
-
-        self.audio_conversion_label = tk.Label(
-            audio_options_frame,
-            text="Conversion audio :",
-            width=18,
-            anchor="w"
+        self.conversion_toggle_btn = ttk.Button(
+            format_block,
+            text="▸ Options de conversion",
+            style="Toolbutton",
+            command=self.toggle_conversion_options
         )
-        self.audio_conversion_label.pack(side="left")
+        self.conversion_toggle_btn.pack(anchor="w", pady=(6, 0))
+
+        # Folded by default: the shortcuts already choose the conversion.
+        self.conversion_frame = ttk.Frame(format_block)
+
+        self.audio_conversion_label = ttk.Label(
+            self.conversion_frame,
+            text="Conversion audio :"
+        )
+        self.audio_conversion_label.grid(row=0, column=0, sticky="w")
 
         self.audio_conversion_combo = ttk.Combobox(
-            audio_options_frame,
+            self.conversion_frame,
             textvariable=self.audio_conversion_var,
             values=AUDIO_CONVERSION_OPTIONS,
             state="readonly",
-            width=24
+            width=18
         )
-
-        self.audio_conversion_combo.pack(side="left", padx=(8, 0))
+        self.audio_conversion_combo.grid(row=0, column=1, padx=8, pady=2)
         self.audio_conversion_combo.current(1)
 
-        self.delete_audio_check = tk.Checkbutton(
-            audio_options_frame,
+        self.delete_audio_check = ttk.Checkbutton(
+            self.conversion_frame,
             text="Supprimer l'original après conversion",
             variable=self.delete_audio_source_var
         )
-        self.delete_audio_check.pack(side="left", padx=(16, 0))
+        self.delete_audio_check.grid(row=0, column=2, sticky="w")
 
-        video_options_frame = tk.Frame(self.root)
-        video_options_frame.pack(fill="x", padx=12, pady=(8, 0))
-
-        self.video_conversion_label = tk.Label(
-            video_options_frame,
-            text="Conversion vidéo :",
-            width=18,
-            anchor="w"
+        self.video_conversion_label = ttk.Label(
+            self.conversion_frame,
+            text="Conversion vidéo :"
         )
-        self.video_conversion_label.pack(side="left")
+        self.video_conversion_label.grid(row=1, column=0, sticky="w")
 
         self.video_conversion_combo = ttk.Combobox(
-            video_options_frame,
+            self.conversion_frame,
             textvariable=self.video_conversion_var,
             values=VIDEO_CONVERSION_OPTIONS,
             state="readonly",
-            width=24
+            width=18
         )
-
-        self.video_conversion_combo.pack(side="left", padx=(8, 0))
+        self.video_conversion_combo.grid(row=1, column=1, padx=8, pady=2)
         self.video_conversion_combo.current(0)
 
-        self.delete_video_check = tk.Checkbutton(
-            video_options_frame,
+        self.delete_video_check = ttk.Checkbutton(
+            self.conversion_frame,
             text="Supprimer l'original après conversion",
             variable=self.delete_video_source_var
         )
-        self.delete_video_check.pack(side="left", padx=(16, 0))
+        self.delete_video_check.grid(row=1, column=2, sticky="w")
 
-        tk.Label(
+        # ---- Destination: where the file goes.
+        destination_block = ttk.LabelFrame(
             self.root,
-            text="Dossier de sauvegarde :",
-            anchor="w"
-        ).pack(fill="x", **pad)
-
-        folder_frame = tk.Frame(self.root)
-        folder_frame.pack(fill="x", padx=12)
-
-        self.folder_entry = tk.Entry(
-            folder_frame,
-            textvariable=self.folder_var,
-            font=("Segoe UI", 10)
+            text="Destination",
+            padding=block_padding
         )
+        destination_block.pack(fill="x", padx=12, pady=(0, 6))
 
+        folder_frame = ttk.Frame(destination_block)
+        folder_frame.pack(fill="x")
+
+        self.folder_entry = ttk.Entry(
+            folder_frame,
+            textvariable=self.folder_var
+        )
         self.folder_entry.pack(
             side="left",
             fill="x",
             expand=True
         )
 
-        tk.Button(
+        ttk.Button(
             folder_frame,
             text="Choisir...",
-            width=10,
+            width=9,
             command=self.choose_folder
         ).pack(side="left", padx=(8, 0))
 
-        tk.Checkbutton(
-            self.root,
+        ttk.Checkbutton(
+            destination_block,
             text="Créer un fichier SHA-256 avec le téléchargement",
             variable=self.create_sha256_var,
-        ).pack(fill="x", padx=12, pady=(6, 0))
+        ).pack(fill="x", pady=(8, 0))
 
-        start_frame = tk.Frame(self.root)
-        start_frame.pack(padx=12, pady=(8, 4))
+        start_frame = ttk.Frame(self.root)
+        start_frame.pack(padx=12, pady=(2, 4))
 
         self.start_btn = ttk.Button(
             start_frame,
             text="Lancer le téléchargement",
             command=self.start_download_flow,
-            style="Primary.TButton",
-            width=26
+            width=24
         )
         self.start_btn.pack(side="left")
         self.start_btn.config(state="disabled")
@@ -1264,41 +1400,40 @@ class App:
             start_frame,
             text="Annuler",
             command=self.cancel_download,
-            width=10,
+            width=9,
             state="disabled"
         )
-        self.cancel_btn.pack(side="left", padx=(8, 0), ipady=4)
+        self.cancel_btn.pack(side="left", padx=(8, 0))
 
         self.set_conversion_controls("none")
 
-        status_row = tk.Frame(self.root)
+        status_row = ttk.Frame(self.root)
         status_row.pack(fill="x", padx=12, pady=(2, 4))
 
-        self.status_label = tk.Label(
+        self.status_label = ttk.Label(
             status_row,
             text="Prêt.",
             anchor="w",
-            justify="left",
-            fg="#333333"
+            justify="left"
         )
         self.status_label.pack(side="left", fill="x", expand=True)
 
         # Shown after a download, instead of a dialog box.
-        self.result_frame = tk.Frame(status_row)
-        self.open_result_file_btn = tk.Button(
+        self.result_frame = ttk.Frame(status_row)
+        self.open_result_file_btn = ttk.Button(
             self.result_frame,
             text="Ouvrir le fichier",
             command=self.open_result_file
         )
         self.open_result_file_btn.pack(side="left")
-        tk.Button(
+        ttk.Button(
             self.result_frame,
             text="Ouvrir le dossier",
             command=self.open_result_folder
         ).pack(side="left", padx=(6, 0))
 
-        progress_outer = tk.Frame(self.root)
-        progress_outer.pack(fill="x", padx=12, pady=(0, 8))
+        progress_outer = ttk.Frame(self.root)
+        progress_outer.pack(fill="x", padx=12, pady=(0, 6))
 
         self.progress = ttk.Progressbar(
             progress_outer,
@@ -1306,39 +1441,79 @@ class App:
             mode="determinate",
             maximum=100
         )
+        self.progress.pack(fill="x", pady=(0, 4))
 
-        self.progress.pack(fill="x", pady=(0, 6))
-
-        progress_info = tk.Frame(progress_outer)
+        progress_info = ttk.Frame(progress_outer)
         progress_info.pack(fill="x")
 
-        tk.Label(
+        ttk.Label(
             progress_info,
             textvariable=self.progress_percent_var,
             anchor="w",
-            width=12
+            width=10
         ).pack(side="left")
 
-        tk.Label(
+        ttk.Label(
             progress_info,
             textvariable=self.progress_speed_var,
             anchor="w",
-            width=24
+            width=22
         ).pack(side="left", padx=(8, 0))
 
-        tk.Label(
+        ttk.Label(
             progress_info,
             textvariable=self.progress_eta_var,
             anchor="w"
         ).pack(side="left", padx=(8, 0))
 
-        history_frame = tk.LabelFrame(
-            self.root,
-            text="Historique des téléchargements"
+        # Journal and history share the bottom of the window as tabs.
+        self.bottom_tabs = ttk.Notebook(self.root)
+        self.bottom_tabs.pack(fill="both", expand=True, padx=12, pady=(2, 12))
+
+        journal_tab = ttk.Frame(self.bottom_tabs, padding=(0, 6, 0, 0))
+        self.history_tab = ttk.Frame(self.bottom_tabs, padding=(0, 6, 0, 0))
+        self.bottom_tabs.add(journal_tab, text="Journal")
+        self.bottom_tabs.add(self.history_tab, text="Historique")
+
+        ttk.Checkbutton(
+            journal_tab,
+            text="Afficher les détails techniques",
+            variable=self.show_details_var,
+            command=self.toggle_details_visibility
+        ).pack(anchor="e")
+
+        self.log_box = tk.Text(
+            journal_tab,
+            height=8,
+            wrap="word",
+            font=("Consolas", 9),
+            background=palette["text_bg"],
+            foreground=palette["text_fg"],
+            insertbackground=palette["text_fg"],
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=palette["border"],
+            highlightcolor=palette["border"],
+            padx=6,
+            pady=4
         )
-        history_frame.pack(fill="x", padx=12, pady=(0, 8))
-        history_frame.grid_columnconfigure(0, weight=1)
-        history_frame.grid_columnconfigure(1, weight=0)
+        # Raw yt-dlp and ffmpeg output, hidden unless the user asks for it.
+        self.log_box.tag_configure(
+            "detail",
+            elide=True,
+            foreground=palette["detail"]
+        )
+        self.log_box.pack(fill="both", expand=True, pady=(4, 0))
+
+        self.log_box.insert(
+            "end",
+            "Le journal apparaîtra ici.\n"
+        )
+
+        self.log_box.config(state="disabled")
+
+        self.history_tab.grid_columnconfigure(0, weight=1)
+        self.history_tab.grid_rowconfigure(0, weight=1)
 
         history_columns = (
             "time",
@@ -1348,7 +1523,7 @@ class App:
         )
 
         self.history_tree = ttk.Treeview(
-            history_frame,
+            self.history_tab,
             columns=history_columns,
             show="headings",
             height=3
@@ -1359,84 +1534,44 @@ class App:
         self.history_tree.heading("conversion", text="Conversion")
         self.history_tree.heading("folder", text="Dossier")
 
-        self.history_tree.column("time", width=80, minwidth=45, stretch=True)
-        self.history_tree.column("file", width=360, minwidth=90, stretch=True)
+        # Initial widths only: resize_history_columns() shares the real width.
+        self.history_tree.column("time", width=60, minwidth=45, stretch=True)
+        self.history_tree.column("file", width=180, minwidth=90, stretch=True)
         self.history_tree.column(
             "conversion",
-            width=140,
+            width=90,
             minwidth=70,
             stretch=True
         )
-        self.history_tree.column("folder", width=420, minwidth=90, stretch=True)
+        self.history_tree.column("folder", width=140, minwidth=90, stretch=True)
 
         self.history_tree.grid(
             row=0,
             column=0,
-            sticky="ew",
-            padx=(8, 6),
-            pady=8
+            sticky="nsew",
+            padx=(0, 8)
         )
         self.history_tree.bind(
             "<Configure>",
             self.resize_history_columns
         )
 
-        history_buttons = tk.Frame(history_frame)
-        history_buttons.grid(
-            row=0,
-            column=1,
-            sticky="n",
-            padx=(0, 8),
-            pady=8
-        )
+        history_buttons = ttk.Frame(self.history_tab)
+        history_buttons.grid(row=0, column=1, sticky="n")
 
-        tk.Button(
+        ttk.Button(
             history_buttons,
             text="Ouvrir dossier",
-            width=14,
+            width=13,
             command=self.open_selected_history_folder
         ).pack(fill="x")
 
-        tk.Button(
+        ttk.Button(
             history_buttons,
             text="Ouvrir fichier",
-            width=14,
+            width=13,
             command=self.open_selected_history_file
         ).pack(fill="x", pady=(6, 0))
-
-        log_header = tk.Frame(self.root)
-        log_header.pack(fill="x", padx=12)
-
-        tk.Label(log_header, text="Journal", anchor="w").pack(side="left")
-
-        tk.Checkbutton(
-            log_header,
-            text="Afficher les détails techniques",
-            variable=self.show_details_var,
-            command=self.toggle_details_visibility
-        ).pack(side="right")
-
-        self.log_box = tk.Text(
-            self.root,
-            height=14,
-            wrap="word"
-        )
-        # Raw yt-dlp and ffmpeg output, hidden unless the user asks for it.
-        self.log_box.tag_configure("detail", elide=True, foreground="#777777")
-
-        self.log_box.pack(
-            fill="both",
-            expand=True,
-            padx=12,
-            pady=(0, 12)
-        )
-
-        self.log_box.insert(
-            "end",
-            "Le journal apparaîtra ici.\n"
-        )
-
-        self.log_box.config(state="disabled")
 
     def append_log(self, text, detail=False):
         self.log_box.config(state="normal")
@@ -1775,16 +1910,16 @@ class App:
         self.delete_audio_check.config(
             state="normal" if active_kind == "audio" else "disabled"
         )
-        self.audio_conversion_label.config(
-            fg="#000000" if active_kind == "audio" else "#777777"
+        self.audio_conversion_label.state(
+            ["!disabled"] if active_kind == "audio" else ["disabled"]
         )
 
         self.video_conversion_combo.config(state=video_state)
         self.delete_video_check.config(
             state="normal" if active_kind == "video" else "disabled"
         )
-        self.video_conversion_label.config(
-            fg="#000000" if active_kind == "video" else "#777777"
+        self.video_conversion_label.state(
+            ["!disabled"] if active_kind == "video" else ["disabled"]
         )
 
     def get_selected_format_kind(self, selected_format):
@@ -2082,6 +2217,11 @@ class App:
             )
         )
 
+        self.bottom_tabs.tab(
+            self.history_tab,
+            text=f"Historique ({len(self.download_history)})"
+        )
+
     def get_selected_history_item(self):
         selection = self.history_tree.selection()
 
@@ -2160,8 +2300,9 @@ class App:
         self.progress_log_start_index = None
         self.progress_log_line_exists = False
 
-    def set_status(self, text, color="#333333"):
-        self.status_label.config(text=text, fg=color)
+    def set_status(self, text, color=None):
+        # Without a color, the theme's text color is used.
+        self.status_label.config(text=text, foreground=color or "")
         self.root.update_idletasks()
 
     def set_status_threadsafe(self, text):
@@ -2684,6 +2825,7 @@ class App:
             return
 
         self.pending_preset = preset
+        self.show_preview("")
         self.disable_action_buttons()
         self.selected_download_format = None
         self.selected_download_title = None
@@ -2787,6 +2929,8 @@ class App:
                 return
 
             data = json.loads(stdout_text)
+            preview_text = build_preview_text(data, playlist_mode)
+            self.root.after(0, lambda: self.show_preview(preview_text))
 
             if playlist_mode and data.get("_type") == "playlist":
                 entries = data.get("entries") or []
@@ -2975,6 +3119,10 @@ class App:
 
         selected_kind = self.get_selected_format_kind(selected)
         self.set_conversion_controls(selected_kind)
+
+        if not preset:
+            # The full list was used: show what will be applied afterwards.
+            self.show_conversion_options(True)
 
         if preset:
             self.start_download_flow()
@@ -3481,12 +3629,12 @@ class App:
         if main_file:
             self.set_status(
                 f"Téléchargement terminé : {os.path.basename(main_file)}",
-                SUCCESS_COLOR
+                palette["success"]
             )
             self.append_log(f"Téléchargement terminé : {main_file}")
 
         else:
-            self.set_status("Téléchargement terminé.", SUCCESS_COLOR)
+            self.set_status("Téléchargement terminé.", palette["success"])
             self.append_log(
                 "Téléchargement terminé. Impossible de détecter "
                 "automatiquement le fichier principal."
@@ -3590,7 +3738,7 @@ class App:
         self.set_status(
             "Téléchargement terminé, SHA-256 enregistré : "
             f"{os.path.basename(hash_txt_path)}",
-            SUCCESS_COLOR
+            palette["success"]
         )
         self.show_result(main_file, folder)
 
@@ -3609,6 +3757,29 @@ class App:
             f"Impossible de calculer "
             f"le SHA-256.\n\n{error_text}"
         )
+
+    def show_conversion_options(self, visible):
+        self.conversion_options_visible = visible
+
+        if visible:
+            self.conversion_frame.pack(fill="x", pady=(4, 0))
+        else:
+            self.conversion_frame.pack_forget()
+
+        self.conversion_toggle_btn.config(
+            text=("▾" if visible else "▸") + " Options de conversion"
+        )
+
+    def toggle_conversion_options(self):
+        self.show_conversion_options(not self.conversion_options_visible)
+
+    def show_preview(self, text):
+        self.preview_var.set(text)
+
+        if text:
+            self.preview_label.pack(fill="x", pady=(6, 0), after=self.url_frame)
+        else:
+            self.preview_label.pack_forget()
 
     def start_preset(self, kind):
         folder = self.folder_var.get().strip()
@@ -3711,7 +3882,7 @@ class App:
         self.enable_choose_format_button()
         self.reset_progress()
         self.clear_progress_log_line_marker()
-        self.set_status("Téléchargement annulé.", CANCEL_COLOR)
+        self.set_status("Téléchargement annulé.", palette["warning"])
         self.append_log("Téléchargement annulé.")
 
     def show_result(self, main_file, folder):
