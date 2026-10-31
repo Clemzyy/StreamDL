@@ -8,6 +8,7 @@ import threading
 import subprocess
 import time
 import webbrowser
+from dataclasses import replace
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -25,22 +26,44 @@ from auth_support import (
     sanitize_technical_text,
     validate_netscape_cookie_file,
 )
-from ytdlp_updater import (
+from tools_manager import (
+    DENO,
+    FFMPEG,
+    MB,
+    TOOL_SPECS,
+    YTDLP,
+    ChecksumMismatch,
     default_storage_dir,
     describe_error,
     fetch_latest_release,
-    find_best_local_copy,
+    find_installed_copies,
     install_release,
+    is_check_due,
     is_newer_release,
+    record_check,
+    remove_legacy_copies,
     remove_superseded_copies,
+    resolve_tool,
+    find_exe_on_path,
+    run_version_command,
 )
 
+
+# Windows otherwise searches the current folder first for executables found
+# through PATH; child processes such as yt-dlp inherit this setting.
+os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
 APP_TITLE = "Téléchargeur Vidéo V7.3 by Clemzy"
 WINDOW_SIZE = "650x780"
 
 PROGRESS_UI_INTERVAL = 0.150
 LOG_UI_INTERVAL = 1.000
+
+TOOL_LABELS = {
+    "yt-dlp": "yt-dlp",
+    "deno": "Deno",
+    "ffmpeg": "ffmpeg",
+}
 
 AUDIO_CONVERSION_OPTIONS = [
     "Aucune conversion",
@@ -153,79 +176,117 @@ PROGRESS_RE_SIMPLE = re.compile(
 )
 
 
+def is_nuitka_build():
+    return "__compiled__" in globals()
+
+
+def is_packaged_build():
+    return getattr(sys, "frozen", False) or is_nuitka_build()
+
+
 def get_base_dir():
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return sys._MEIPASS  # type: ignore[attr-defined]
+    if is_nuitka_build():
+        # Nuitka unpacks the program and its data files beside this module.
+        return os.path.dirname(os.path.abspath(__file__))
     return os.path.dirname(os.path.abspath(sys.argv[0]))
 
 
 def get_app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
+    if is_nuitka_build():
+        # Folder of the onefile executable the user started, not the unpack folder.
+        original = getattr(__compiled__, "original_argv0", None)  # type: ignore[name-defined]  # noqa: F821
+        return os.path.dirname(os.path.abspath(original or sys.argv[0]))
     return os.path.dirname(os.path.abspath(sys.argv[0]))
 
 
-def find_bundled_downloader():
-    for folder in (get_base_dir(), get_app_dir()):
-        local_exe = os.path.join(folder, "yt-dlp.exe")
+def get_local_tool_dirs():
+    # A packaged build trusts only the tools embedded in it (--full), never
+    # an exe dropped beside StreamDL.exe, e.g. in the Downloads folder.
+    # Running the .pyw uses the tools of the source folder.
+    if is_packaged_build():
+        return [get_base_dir()]
+    return [get_app_dir()]
 
-        if os.path.isfile(local_exe):
-            return local_exe
 
-    return None
+def find_on_path(name):
+    # Development only: a packaged build uses verified or embedded tools.
+    return None if is_packaged_build() else find_exe_on_path(name)
+
+
+def remove_old_app_caches():
+    # Each Nuitka build is unpacked once into its own folder,
+    # %LOCALAPPDATA%\StreamDL\app\<build id>; earlier builds are removed.
+    if not is_nuitka_build():
+        return
+
+    current = os.path.normcase(os.path.abspath(get_base_dir()))
+    cache_root = os.path.dirname(current)
+    # Paths are compared in normcase form: lowercase on Windows.
+    if (
+        os.path.basename(cache_root) != os.path.normcase("app")
+        or os.path.basename(os.path.dirname(cache_root))
+        != os.path.normcase("StreamDL")
+    ):
+        return
+
+    for name in os.listdir(cache_root):
+        entry = os.path.normcase(os.path.join(cache_root, name))
+        if os.path.isdir(entry) and entry != current:
+            shutil.rmtree(entry, ignore_errors=True)
 
 
 def find_downloader(preferred_path=None):
-    # The startup update check may select a newer verified copy stored in
-    # %LOCALAPPDATA%\StreamDL\yt-dlp instead of the bundled executable.
+    # The startup tools check selects a local or verified managed copy.
     if preferred_path and os.path.isfile(preferred_path):
         return [preferred_path]
 
-    bundled_exe = find_bundled_downloader()
-    if bundled_exe:
-        return [bundled_exe]
+    path_downloader = find_on_path("yt-dlp")
+    if path_downloader:
+        return [path_downloader]
 
-    if shutil.which("yt-dlp"):
-        return ["yt-dlp"]
+    if is_packaged_build():
+        # sys.executable is StreamDL itself here, not a Python interpreter.
+        raise RuntimeError(
+            "yt-dlp n'est pas installé. Clique sur « Réessayer » en haut "
+            "de la fenêtre."
+        )
 
     return [sys.executable, "-m", "yt_dlp"]
 
 
-def find_ffmpeg():
-    for folder in (get_base_dir(), get_app_dir()):
-        local_exe = os.path.join(folder, "ffmpeg.exe")
+def find_ffmpeg(preferred_path=None):
+    if preferred_path and os.path.isfile(preferred_path):
+        return preferred_path
 
-        if os.path.isfile(local_exe):
-            return local_exe
-
-    path_ffmpeg = shutil.which("ffmpeg")
+    path_ffmpeg = find_on_path("ffmpeg")
     if path_ffmpeg:
         return path_ffmpeg
 
     return None
 
 
-def find_js_runtime():
+def find_js_runtime(deno_path=None):
     # Deno is the runtime officially recommended by yt-dlp for YouTube EJS.
-    # A bundled copy makes the desktop application work without PATH changes.
-    for folder in (get_base_dir(), get_app_dir()):
-        deno_path = os.path.join(folder, "deno.exe")
+    # The startup tools check provides a local or verified managed copy.
+    if deno_path and os.path.isfile(deno_path):
+        return "deno", deno_path
 
-        if os.path.isfile(deno_path):
-            return "deno", deno_path
-
-    path_deno = shutil.which("deno")
+    path_deno = find_on_path("deno")
     if path_deno:
         return "deno", path_deno
 
     # Keep compatibility with existing portable Node deployments.
-    for folder in (get_base_dir(), get_app_dir()):
+    for folder in get_local_tool_dirs():
         node_path = os.path.join(folder, "node.exe")
 
         if os.path.isfile(node_path):
             return "node", node_path
 
-    path_node = shutil.which("node")
+    path_node = find_on_path("node")
     if path_node:
         return "node", path_node
 
@@ -801,10 +862,13 @@ class App:
         self.pending_cookie_file_for_preference = None
         self.temporary_cookie_file_paths = set()
         self.last_auth_error_info = None
-        self.ytdlp_path = None
-        self.ytdlp_status_var = tk.StringVar(
-            value="yt-dlp : recherche de mise à jour..."
-        )
+        self.tool_storage_dir = default_storage_dir()
+        self.tool_copies = {}
+        self.tool_status = {}
+        self.tools_status_var = tk.StringVar()
+        self.tools_worker_running = False
+        self.choose_blocked_by_tools = False
+        self.start_blocked_by_tools = False
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_application_close)
 
@@ -824,8 +888,15 @@ class App:
         self.current_formats_list = []
         self.social_icon_images = []
 
+        self.resolve_tools()
         self.build_ui()
-        self.start_ytdlp_update_check()
+        self.render_tools_status()
+        self.enable_choose_format_button()
+        # Started once the window is drawn, so it never delays the first paint.
+        self.tools_worker_after_id = self.root.after(
+            300,
+            self.start_tools_worker
+        )
 
     def build_ui(self):
         pad = {"padx": 12, "pady": 8}
@@ -835,10 +906,17 @@ class App:
 
         tk.Label(
             top_bar,
-            textvariable=self.ytdlp_status_var,
+            textvariable=self.tools_status_var,
             fg="#666666",
             anchor="w"
         ).pack(side="left")
+
+        # Shown only when a first-launch installation failed.
+        self.tools_retry_btn = tk.Button(
+            top_bar,
+            text="Réessayer",
+            command=self.start_tools_worker
+        )
 
         links_frame = tk.Frame(top_bar)
         links_frame.pack(side="right")
@@ -1215,91 +1293,290 @@ class App:
     def append_log_threadsafe(self, text):
         self.root.after(0, lambda: self.append_log(text))
 
-    def set_ytdlp_status_threadsafe(self, text):
-        self.root.after(0, lambda: self.ytdlp_status_var.set(text))
+    def tool_path(self, name):
+        copy = self.tool_copies.get(name)
+        return copy.path if copy else None
 
-    def start_ytdlp_update_check(self):
+    def tool_label(self, spec, copy):
+        label = TOOL_LABELS[spec.name]
+        # ffmpeg builds are named by date, which means little to the user.
+        if copy and copy.version and spec is not FFMPEG:
+            return f"{label} {copy.version}"
+        return f"{label} ✓"
+
+    def resolve_tools(self):
+        # Instant: nothing is executed, so the window opens without waiting.
+        local_dirs = get_local_tool_dirs()
+        for spec in TOOL_SPECS:
+            copy = resolve_tool(
+                spec,
+                local_dirs,
+                self.tool_storage_dir,
+                allow_path=not is_packaged_build()
+            )
+            if copy:
+                self.tool_copies[spec.name] = copy
+                self.tool_status[spec.name] = self.tool_label(spec, copy)
+            elif spec is DENO and find_js_runtime() is not None:
+                self.tool_status[spec.name] = "Node ✓"
+            else:
+                self.tool_status[spec.name] = (
+                    f"{TOOL_LABELS[spec.name]} : à installer"
+                )
+
+    def render_tools_status(self):
+        self.tools_status_var.set(
+            " · ".join(self.tool_status[spec.name] for spec in TOOL_SPECS)
+        )
+
+    def set_tool_status_threadsafe(self, name, text):
+        def apply():
+            self.tool_status[name] = text
+            self.render_tools_status()
+
+        self.root.after(0, apply)
+
+    def set_tool_copy_threadsafe(self, spec, copy):
+        def apply():
+            self.tool_copies[spec.name] = copy
+            self.tool_status[spec.name] = self.tool_label(spec, copy)
+            self.render_tools_status()
+            self.on_tools_changed()
+
+        self.root.after(0, apply)
+
+    def tools_ready_for_formats(self):
+        return (
+            self.tool_path("yt-dlp") is not None
+            and find_js_runtime(self.tool_path("deno")) is not None
+        )
+
+    def tools_ready_for_download(self):
+        return (
+            self.tools_ready_for_formats()
+            and find_ffmpeg(self.tool_path("ffmpeg")) is not None
+        )
+
+    def enable_choose_format_button(self):
+        ready = self.tools_ready_for_formats()
+        self.choose_format_btn.config(state="normal" if ready else "disabled")
+        self.choose_blocked_by_tools = not ready
+
+    def enable_start_button(self):
+        ready = self.tools_ready_for_download()
+        self.start_btn.config(state="normal" if ready else "disabled")
+        self.start_blocked_by_tools = not ready
+
+    def disable_action_buttons(self):
+        # The running step re-enables the buttons itself when it ends.
+        self.choose_format_btn.config(state="disabled")
+        self.start_btn.config(state="disabled")
+        self.choose_blocked_by_tools = False
+        self.start_blocked_by_tools = False
+
+    def on_tools_changed(self):
+        if self.choose_blocked_by_tools:
+            self.enable_choose_format_button()
+        if self.start_blocked_by_tools:
+            self.enable_start_button()
+
+    def start_tools_worker(self):
+        if self.tools_worker_running:
+            return
+        self.tools_worker_running = True
+        self.tools_retry_btn.pack_forget()
         threading.Thread(
-            target=self.ytdlp_update_worker,
+            target=self.tools_worker,
             daemon=True
         ).start()
 
-    def ytdlp_update_worker(self):
-        # Runs at each launch: yt-dlp often needs a new release within days
-        # when YouTube changes. Downloads keep working with the current copy
-        # while the check or the update is in progress.
-        storage_dir = default_storage_dir()
+    def tool_needs_install(self, spec):
+        copy = self.tool_copies.get(spec.name)
+        if spec is YTDLP:
+            # A yt-dlp found on PATH may be too old for YouTube.
+            return copy is None or copy.source == "path"
+        if spec is DENO:
+            return copy is None and find_js_runtime() is None
+        return copy is None
+
+    def tools_worker(self):
+        # yt-dlp is checked at each launch: it often needs a new release
+        # within days when YouTube changes. Deno and ffmpeg are checked every
+        # 30 days. Present tools keep working while checks and updates run.
+        try:
+            missing = [
+                TOOL_LABELS[spec.name]
+                for spec in TOOL_SPECS
+                if self.tool_needs_install(spec)
+            ]
+            if missing:
+                self.append_log_threadsafe(
+                    "Installation des outils nécessaires ("
+                    + ", ".join(missing)
+                    + ") depuis GitHub. Cette étape n'a lieu qu'une fois."
+                )
+
+            for spec in TOOL_SPECS:
+                try:
+                    self.update_tool(spec)
+                except Exception as e:
+                    self.set_tool_status_threadsafe(
+                        spec.name,
+                        f"{TOOL_LABELS[spec.name]} : échec"
+                    )
+                    self.append_log_threadsafe(
+                        f"Installation de {TOOL_LABELS[spec.name]} impossible : "
+                        + describe_error(e)
+                    )
+
+            remove_legacy_copies(self.tool_storage_dir)
+            remove_old_app_caches()
+
+        except Exception as e:
+            self.append_log_threadsafe(
+                "Préparation des outils interrompue : " + describe_error(e)
+            )
+
+        finally:
+            self.root.after(0, self.on_tools_worker_done)
+
+    def on_tools_worker_done(self):
+        self.tools_worker_running = False
+        self.on_tools_changed()
+
+        if not self.tools_ready_for_download():
+            self.tools_retry_btn.pack(side="left", padx=(8, 0))
+            self.set_status(
+                "Outils manquants. Vérifie ta connexion Internet, "
+                "puis clique sur « Réessayer »."
+            )
+
+    def update_tool(self, spec):
+        label = TOOL_LABELS[spec.name]
+        current = self.tool_copies.get(spec.name)
+        needs_install = self.tool_needs_install(spec)
+
+        if spec is not YTDLP and current is None and not needs_install:
+            # Node already solves the YouTube challenges.
+            return
+
+        if spec is not YTDLP and current and current.source != "managed":
+            # Deno or ffmpeg embedded in a full build, or found on PATH
+            # when the source is run.
+            return
+
+        if spec is YTDLP and current and current.source == "local":
+            # A full build or the source folder ships yt-dlp: a newer
+            # verified managed copy still wins.
+            current = replace(
+                current,
+                version=run_version_command(spec, current.path)
+            )
+            installed = find_installed_copies(spec, self.tool_storage_dir)
+            if installed and installed[0].version_key > current.version_key:
+                current = installed[0]
+            self.set_tool_copy_threadsafe(spec, current)
+
+        if current and current.source != "path":
+            # Copies replaced during an earlier launch. A copy replaced during
+            # this session may still be used by a download: it waits until the
+            # next launch.
+            remove_superseded_copies(
+                spec,
+                self.tool_storage_dir,
+                current.path if current.source == "managed" else None
+            )
+
+        if not needs_install and not is_check_due(spec, self.tool_storage_dir):
+            return
 
         try:
-            current = find_best_local_copy(
-                find_bundled_downloader(),
-                storage_dir
-            )
-        except Exception as e:
-            current = None
-            self.append_log_threadsafe(
-                f"Lecture de la version yt-dlp impossible : {e}"
-            )
-
-        if current:
-            self.ytdlp_path = current.path
-
-        current_label = (
-            current.version
-            if current and current.version
-            else "version inconnue"
-        )
-
-        try:
-            release = fetch_latest_release()
+            release = fetch_latest_release(spec)
 
         except Exception as e:
-            self.set_ytdlp_status_threadsafe(
-                f"yt-dlp {current_label} (mise à jour non vérifiée)"
+            if current is None:
+                raise
+            self.set_tool_status_threadsafe(
+                spec.name,
+                self.tool_label(spec, current) + " (non vérifié)"
             )
             self.append_log_threadsafe(
-                "Vérification des mises à jour yt-dlp impossible : "
+                f"Vérification des mises à jour de {label} impossible : "
                 + describe_error(e)
             )
             return
 
-        if not is_newer_release(release, current):
-            remove_superseded_copies(storage_dir, self.ytdlp_path)
-            self.set_ytdlp_status_threadsafe(
-                f"yt-dlp {current_label} (à jour)"
-            )
+        if not needs_install and not is_newer_release(release, current):
+            record_check(spec, self.tool_storage_dir)
             return
 
-        self.set_ytdlp_status_threadsafe(
-            f"yt-dlp : installation de la version {release.version}..."
-        )
-        self.append_log_threadsafe(
-            f"Nouvelle version de yt-dlp disponible : {release.version} "
-            f"(actuelle : {current_label}). Téléchargement depuis GitHub..."
-        )
+        if not needs_install:
+            self.append_log_threadsafe(
+                f"Nouvelle version de {label} disponible : {release.version}. "
+                "Téléchargement depuis GitHub..."
+            )
 
         try:
-            updated = install_release(release, storage_dir)
+            installed_copy = self.install_tool(spec, release)
 
         except Exception as e:
-            self.set_ytdlp_status_threadsafe(
-                f"yt-dlp {current_label} (mise à jour échouée)"
+            if current is None:
+                raise
+            self.set_tool_status_threadsafe(
+                spec.name,
+                self.tool_label(spec, current) + " (mise à jour échouée)"
             )
             self.append_log_threadsafe(
-                "Mise à jour de yt-dlp impossible : " + describe_error(e)
+                f"Mise à jour de {label} impossible : " + describe_error(e)
             )
             return
 
-        self.ytdlp_path = updated.path
-        remove_superseded_copies(storage_dir, updated.path)
-
-        self.set_ytdlp_status_threadsafe(
-            f"yt-dlp {updated.version} (mis à jour)"
+        # Recorded only once installed, so a failed update is retried at the
+        # next launch instead of 30 days later.
+        record_check(spec, self.tool_storage_dir)
+        self.set_tool_copy_threadsafe(spec, installed_copy)
+        installed_name = (
+            label
+            if spec is FFMPEG
+            else f"{label} {installed_copy.version}"
         )
         self.append_log_threadsafe(
-            f"yt-dlp mis à jour vers {updated.version} "
-            "(empreinte SHA-256 vérifiée)."
+            f"{installed_name} installé (empreinte SHA-256 vérifiée)."
         )
+
+    def install_tool(self, spec, release):
+        label = TOOL_LABELS[spec.name]
+        last_update = [0.0]
+
+        def progress(done, total):
+            now = time.monotonic()
+            if now - last_update[0] < PROGRESS_UI_INTERVAL and done != total:
+                return
+            last_update[0] = now
+            if total and done >= total:
+                text = f"{label} : vérification..."
+            elif total:
+                text = f"{label} : {done // MB}/{total // MB} Mo"
+            else:
+                text = f"{label} : {done // MB} Mo"
+            self.set_tool_status_threadsafe(spec.name, text)
+
+        for attempt in range(2):
+            try:
+                return install_release(
+                    spec,
+                    release,
+                    self.tool_storage_dir,
+                    progress=progress
+                )
+            except ChecksumMismatch:
+                # The rolling "latest" ffmpeg build may be replaced while it
+                # is downloaded: one new attempt with the new build.
+                if attempt or spec is not FFMPEG:
+                    raise
+                release = fetch_latest_release(spec)
+
+        return None
 
     def resize_history_columns(self, event):
         total_width = max(event.width - 8, 1)
@@ -1366,7 +1643,7 @@ class App:
 
     def build_ytdlp_runtime_options(self, cookie_source=None):
         options = []
-        js_runtime = find_js_runtime()
+        js_runtime = find_js_runtime(self.tool_path("deno"))
 
         if js_runtime:
             runtime_name, runtime_path = js_runtime
@@ -1533,6 +1810,7 @@ class App:
             self.cleanup_temporary_cookie_source(CookieSource.file_source(temporary_path))
 
     def on_application_close(self):
+        self.root.after_cancel(self.tools_worker_after_id)
         self.cleanup_all_temporary_cookie_sources()
         self.root.destroy()
 
@@ -2234,8 +2512,14 @@ class App:
             )
             return
 
-        self.choose_format_btn.config(state="disabled")
-        self.start_btn.config(state="disabled")
+        if not re.match(r"https?://", url, re.IGNORECASE):
+            messagebox.showerror(
+                "Erreur",
+                "L'URL doit commencer par http:// ou https://."
+            )
+            return
+
+        self.disable_action_buttons()
         self.selected_download_format = None
         self.selected_download_title = None
         self.selected_download_url = None
@@ -2284,8 +2568,7 @@ class App:
             )
             return
 
-        self.start_btn.config(state="disabled")
-        self.choose_format_btn.config(state="disabled")
+        self.disable_action_buttons()
 
         self.reset_progress()
 
@@ -2308,16 +2591,17 @@ class App:
 
     def fetch_formats_worker(self, url, playlist_mode, cookie_source):
         try:
-            downloader = find_downloader(self.ytdlp_path)
+            downloader = find_downloader(self.tool_path("yt-dlp"))
 
             cmd = downloader + [
                 "-J",
                 "--yes-playlist" if playlist_mode else "--no-playlist",
-                url
             ]
             cmd.extend(
                 self.build_ytdlp_runtime_options(cookie_source)
             )
+            # "--" ends the options: the URL is never read as one.
+            cmd.extend(["--", url])
 
             returncode, stdout_text, stderr_text = (
                 self.run_command_json(cmd)
@@ -2461,7 +2745,7 @@ class App:
     ):
         self.current_formats_list = formats_list
 
-        self.choose_format_btn.config(state="normal")
+        self.enable_choose_format_button()
 
         self.set_status("Choisis un format.")
 
@@ -2475,7 +2759,7 @@ class App:
 
         self.offer_cookie_file_preference(cookie_source)
 
-        ffmpeg_path = find_ffmpeg()
+        ffmpeg_path = find_ffmpeg(self.tool_path("ffmpeg"))
 
         ffmpeg_msg = (
             f"ffmpeg détecté : {ffmpeg_path}"
@@ -2513,7 +2797,7 @@ class App:
         selected_kind = self.get_selected_format_kind(selected)
         self.set_conversion_controls(selected_kind)
 
-        self.start_btn.config(state="normal")
+        self.enable_start_button()
 
         self.set_status(
             "Format choisi. Choisis le dossier puis lance le telechargement."
@@ -2589,8 +2873,8 @@ class App:
         cookie_source
     ):
         try:
-            downloader = find_downloader(self.ytdlp_path)
-            ffmpeg_path = find_ffmpeg()
+            downloader = find_downloader(self.tool_path("yt-dlp"))
+            ffmpeg_path = find_ffmpeg(self.tool_path("ffmpeg"))
 
             format_string = (
                 "bv*+ba/b"
@@ -2612,7 +2896,6 @@ class App:
                     folder,
                     "%(title)s.%(ext)s"
                 ),
-                url,
             ]
 
             if ffmpeg_path:
@@ -2630,6 +2913,8 @@ class App:
                     "--merge-output-format",
                     "mp4"
                 ])
+
+            cmd.extend(["--", url])
 
             self.set_status_threadsafe(
                 "Téléchargement en cours..."
@@ -2952,7 +3237,7 @@ class App:
         return True
 
     def on_fetch_error(self, error_text, cookie_source=None, returncode=-1):
-        self.choose_format_btn.config(state="normal")
+        self.enable_choose_format_button()
         self.start_btn.config(state="disabled")
 
         source = cookie_source or self.selected_cookie_source
@@ -2973,8 +3258,8 @@ class App:
         )
 
     def on_download_error(self, error_text, cookie_source=None, returncode=-1):
-        self.start_btn.config(state="normal")
-        self.choose_format_btn.config(state="normal")
+        self.enable_start_button()
+        self.enable_choose_format_button()
 
         source = cookie_source or self.selected_cookie_source
         self.cleanup_temporary_cookie_source(source)
@@ -2995,8 +3280,8 @@ class App:
 
     def on_success(self, folder, main_file):
         self.cleanup_temporary_cookie_source(self.selected_cookie_source)
-        self.start_btn.config(state="normal")
-        self.choose_format_btn.config(state="normal")
+        self.enable_start_button()
+        self.enable_choose_format_button()
 
         self.set_status(
             "Téléchargement terminé."
@@ -3038,8 +3323,7 @@ class App:
                 "Création du fichier SHA-256 demandée par l'option principale."
             )
 
-            self.start_btn.config(state="disabled")
-            self.choose_format_btn.config(state="disabled")
+            self.disable_action_buttons()
 
             threading.Thread(
                 target=self.hash_worker,
@@ -3106,8 +3390,8 @@ class App:
         digest,
         hash_txt_path
     ):
-        self.start_btn.config(state="normal")
-        self.choose_format_btn.config(state="normal")
+        self.enable_start_button()
+        self.enable_choose_format_button()
 
         self.set_status(
             "SHA-256 calculé."
@@ -3134,8 +3418,8 @@ class App:
         open_folder(folder)
 
     def on_hash_error(self, folder, error_text):
-        self.start_btn.config(state="normal")
-        self.choose_format_btn.config(state="normal")
+        self.enable_start_button()
+        self.enable_choose_format_button()
 
         self.set_status(
             "Erreur pendant le calcul du SHA-256."

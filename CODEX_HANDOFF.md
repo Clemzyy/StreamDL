@@ -8,10 +8,10 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.83.pyw
+  current_source: telechargeur_youtube_v1.84.pyw
   current_app_label: "Téléchargeur Vidéo V7.3 by Clemzy"
-  next_source_version: "1.84"
-  executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py -> dist\\StreamDL.exe"
+  next_source_version: "1.85"
+  executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
   - Répondre en français, ton direct et collaboratif.
@@ -37,12 +37,15 @@ REPO_STATE:
     - telechargeur_youtube_v1.81.pyw: repli automatique vers Téléchargements Windows
     - telechargeur_youtube_v1.82.pyw: mise à jour automatique de yt-dlp, icône GitHub, build portable
     - telechargeur_youtube_v1.83.pyw: messages d'erreur des workers qui ne bloquent plus l'interface
+    - telechargeur_youtube_v1.84.pyw: exe léger Nuitka, outils téléchargés au premier lancement
   files_expected:
-    - telechargeur_youtube_v1.83.pyw
+    - telechargeur_youtube_v1.84.pyw
     - auth_support.py
     - test_auth_support.py
-    - ytdlp_updater.py
-    - test_ytdlp_updater.py
+    - tools_manager.py
+    - test_tools_manager.py
+    - test_app_tools_ui.py
+    - test_build_exe.py
     - build_exe.py
     - social_github.png
     - yt-dlp.exe
@@ -78,12 +81,12 @@ CURRENT_IMPLEMENTATION:
   yt_dlp:
     executable: yt-dlp.exe
     verified_version: 2026.10.26
-    location: same directory as source (bundled in the exe)
-    auto_update: "ytdlp_updater.py; verified copies in %LOCALAPPDATA%\\StreamDL\\yt-dlp\\<version>\\yt-dlp.exe"
+    location: beside the source for development; not bundled in the light exe
+    auto_update: "tools_manager.py; verified copies in %LOCALAPPDATA%\\StreamDL\\tools\\<tool>\\<version>"
   javascript_runtime:
     implementation: find_js_runtime()
     preferred: deno.exe
-    local_environment: "Deno 2.9.5 bundled beside yt-dlp.exe"
+    local_environment: "Deno beside the source for development; managed copy for the light exe"
     command_option: "--js-runtimes deno:<path>"
   cookies_ui:
     values: [Aucun, Chrome, Edge, Firefox, Brave, Opera]
@@ -95,7 +98,8 @@ CURRENT_IMPLEMENTATION:
       Opera: opera
     current_behavior: "--cookies-from-browser <browser>"
   ffmpeg:
-    detection: "find_ffmpeg() searches app dir, base dir, then PATH"
+    detection: "packaged exe: embedded (--full) then verified managed copy; source run: source folder, managed copy, then PATH (.exe only)"
+    managed_source: "github.com/yt-dlp/FFmpeg-Builds, ffmpeg-master-latest-win64-gpl-shared.zip (ffmpeg.exe + DLLs)"
     required_for: "m3u8/HLS, merge separate audio-video streams, conversions"
     missing_was_observed: "A prior download failed because ffmpeg.exe was absent."
     note: "A local ffmpeg.exe later appeared untracked; do not assume it was created by Codex."
@@ -188,6 +192,36 @@ VERSION_1_83_CHANGE:
     block ends, so the callback raised NameError: no error dialog, buttons left disabled.
     The message is now captured in error_text before scheduling the callback.
   - ruff and mypy are clean on the project Python files.
+
+VERSION_1_84_CHANGE:
+  - ytdlp_updater.py became tools_manager.py: one engine (ToolSpec) for yt-dlp, Deno and ffmpeg.
+    Official GitHub releases only (HTTPS, redirects restricted to github.com/*.githubusercontent.com),
+    SHA-256 checked before any execution (SHA2-256SUMS, Deno PowerShell .sha256sum, ffmpeg
+    checksums.sha256), safe zip extraction (whitelisted members, flattened names, no symlink,
+    size caps), version check after install, installed.json marker written last, disk-space check,
+    retries on files locked by antivirus. Storage: %LOCALAPPDATA%\StreamDL\tools\<tool>\<version>.
+    The 1.82/1.83 folder %LOCALAPPDATA%\StreamDL\yt-dlp is removed (yt-dlp downloaded again once).
+  - App: tools resolved instantly at startup without running them; a worker started 300 ms after
+    the window installs missing tools with progress in the top-left label, then checks updates
+    (yt-dlp each launch, Deno and ffmpeg every 30 days via tools\state.json). « Choisir le format »
+    needs yt-dlp + a JS runtime, « Lancer » also needs ffmpeg; « Réessayer » appears when offline.
+  - Packaging benchmark (window visible, this PC): PyInstaller onefile with tools 115 MB ~4.0 s;
+    PyInstaller onefile light 12.2 MB ~2.0-2.6 s; PyInstaller onedir light 12.3 MB zipped ~0.3 s;
+    Nuitka onefile cached light ~0.52 s (median of 5, final exe 8.7 MB). Nuitka chosen: unpacked once into
+    %LOCALAPPDATA%\StreamDL\app\<build id>; older build caches are removed by the app.
+    Nuitka resolves {CACHE_DIR} through the Windows known folder: overriding the LOCALAPPDATA
+    variable in tests moves the tools, not this cache.
+  - QuickJS-ng 0.17 benchmarked against Deno: same formats 9/9 but median 12.5 s vs 5.4 s; Deno kept.
+  - build_exe.py: Nuitka by default (needs nuitka[onefile] + MSVC Build Tools; Dependency Walker is
+    downloaded once by Nuitka), --full embeds the tools, --pyinstaller fallback.
+  - Security (review): a packaged exe never runs a tool dropped beside StreamDL.exe or found on PATH;
+    NoDefaultCurrentDirectoryInExePath=1; PATH lookups accept absolute .exe only; the video URL must
+    start with http(s):// and is passed after "--"; ffmpeg zip whitelist = ffmpeg/ffprobe.exe and
+    av*/sw*/postproc DLLs; GitHub API asset digest cross-checked with the published checksum file.
+  - Installs run in a private %LOCALAPPDATA%\StreamDL\tools\<tool>\.installing-* folder renamed into
+    place (two windows never collide); superseded copies are removed at the next launch only, since
+    a running download may still use them; a failed update is retried at the next launch.
+  - Tests: py -3.13 -m unittest test_tools_manager test_app_tools_ui test_auth_support test_build_exe
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc
