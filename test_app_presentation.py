@@ -61,6 +61,37 @@ class ThemeTests(ErgonomicsTestCase):
         self.assertEqual(self.tk_errors, [])
 
 
+class ThemeByExeNameTests(ErgonomicsTestCase):
+    def test_exe_name_selects_the_theme(self):
+        for name, expected in (
+            ("StreamDL-clair.exe", "light"),
+            ("StreamDL-sombre.exe", "dark"),
+            ("StreamDL-natif.exe", "native"),
+            ("STREAMDL-SOMBRE.EXE", "dark"),
+            ("StreamDL.exe", "auto"),
+            ("telechargeur_youtube_v1.87.pyw", "auto"),
+        ):
+            with mock.patch.object(APP, "get_launcher_path", return_value=f"C:/Apps/{name}"):
+                self.assertEqual(APP.requested_theme(), expected, name)
+
+    def start_as(self, exe_name, windows_dark):
+        with mock.patch.object(APP, "get_launcher_path", return_value=f"C:/Apps/{exe_name}"), \
+                mock.patch.object(APP, "windows_prefers_dark", return_value=windows_dark):
+            self.start_ready_app()
+        return ttk.Style(self.root).theme_use()
+
+    def test_dark_copy_ignores_a_light_windows(self):
+        self.assertEqual(self.start_as("StreamDL-sombre.exe", windows_dark=False), "sun-valley-dark")
+
+    def test_light_copy_ignores_a_dark_windows(self):
+        self.assertEqual(self.start_as("StreamDL-clair.exe", windows_dark=True), "sun-valley-light")
+
+    def test_native_copy_uses_the_classic_look(self):
+        theme = self.start_as("StreamDL-natif.exe", windows_dark=True)
+        self.assertFalse(theme.startswith("sun-valley"))
+        self.assertEqual(str(self.app.log_box["background"]), APP.PALETTES["light"]["text_bg"])
+
+
 class BlockTests(ErgonomicsTestCase):
     def test_controls_are_grouped_in_three_blocks(self):
         self.start_ready_app()

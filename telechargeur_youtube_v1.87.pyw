@@ -61,7 +61,7 @@ from tools_manager import (
 # through PATH; child processes such as yt-dlp inherit this setting.
 os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
-APP_VERSION = "1.86"
+APP_VERSION = "1.87"
 APP_TITLE = f"Téléchargeur Vidéo v{APP_VERSION} by Clemzy"
 WINDOW_SIZE = "650x780"
 
@@ -251,14 +251,35 @@ def get_base_dir():
     return os.path.dirname(os.path.abspath(sys.argv[0]))
 
 
-def get_app_dir():
+def get_launcher_path():
+    # The executable (or script) the user started, not the unpack folder.
     if getattr(sys, "frozen", False):
-        return os.path.dirname(os.path.abspath(sys.executable))
+        return os.path.abspath(sys.executable)
     if is_nuitka_build():
-        # Folder of the onefile executable the user started, not the unpack folder.
         original = getattr(__compiled__, "original_argv0", None)  # type: ignore[name-defined]  # noqa: F821
-        return os.path.dirname(os.path.abspath(original or sys.argv[0]))
-    return os.path.dirname(os.path.abspath(sys.argv[0]))
+        return os.path.abspath(original or sys.argv[0])
+    return os.path.abspath(sys.argv[0])
+
+
+def get_app_dir():
+    return os.path.dirname(get_launcher_path())
+
+
+# Copies of the exe named StreamDL-clair.exe, StreamDL-sombre.exe or
+# StreamDL-natif.exe force a theme; any other name follows Windows.
+THEME_BY_EXE_SUFFIX = {
+    "-clair": "light",
+    "-sombre": "dark",
+    "-natif": "native",
+}
+
+
+def requested_theme():
+    name = os.path.splitext(os.path.basename(get_launcher_path()))[0].lower()
+    for suffix, theme in THEME_BY_EXE_SUFFIX.items():
+        if name.endswith(suffix):
+            return theme
+    return "auto"
 
 
 def get_local_tool_dirs():
@@ -407,13 +428,23 @@ def use_dark_title_bar(window, dark):
         pass
 
 
-def apply_theme(root):
-    """Windows 11 look (sv-ttk), light or dark like the Windows setting."""
-    mode = "dark" if sv_ttk is not None and windows_prefers_dark() else "light"
+def apply_theme(root, requested="auto"):
+    """Windows 11 look (sv-ttk), light or dark like Windows unless requested.
+
+    "native" keeps the classic Windows look, as when sv-ttk is missing.
+    """
+    windows_11_look = sv_ttk is not None and requested != "native"
+    if not windows_11_look:
+        mode = "light"
+    elif requested in ("light", "dark"):
+        mode = requested
+    else:
+        mode = "dark" if windows_prefers_dark() else "light"
+
     palette.clear()
     palette.update(PALETTES[mode])
 
-    if sv_ttk is not None:
+    if windows_11_look:
         sv_ttk.set_theme(mode, root)
         # sv-ttk applies its background colors on <<ThemeChanged>>, an event
         # a window never shown yet does not receive: apply them right away.
@@ -1048,7 +1079,7 @@ class App:
         self.root = root
 
         self.root.title(APP_TITLE)
-        apply_theme(self.root)
+        apply_theme(self.root, requested_theme())
         apply_app_icon(self.root)
         self.root.geometry(WINDOW_SIZE)
         self.root.resizable(True, True)

@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.86.pyw
-  current_app_label: "Téléchargeur Vidéo v1.86 by Clemzy (APP_VERSION follows the source number)"
-  next_source_version: "1.87"
+  current_source: telechargeur_youtube_v1.87.pyw
+  current_app_label: "Téléchargeur Vidéo v1.87 by Clemzy (APP_VERSION follows the source number)"
+  next_source_version: "1.88"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -40,8 +40,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.84.pyw: exe léger Nuitka, outils téléchargés au premier lancement
     - telechargeur_youtube_v1.85.pyw: ergonomie (raccourcis MP4/MP3, Annuler, dossier retenu, journal)
     - telechargeur_youtube_v1.86.pyw: présentation Windows 11 (sv-ttk clair/sombre, blocs, aperçu)
+    - telechargeur_youtube_v1.87.pyw: thème imposé par le nom de l'exe (copies de test)
   files_expected:
-    - telechargeur_youtube_v1.86.pyw
+    - telechargeur_youtube_v1.87.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
@@ -264,6 +265,13 @@ VERSION_1_86_CHANGE:
     about 6 lines at 650x780. App icon set as default icon for every dialog.
   - build_exe.py: --include-package-data=sv_ttk (Nuitka), --collect-data sv_ttk (PyInstaller).
   - Tests: test_app_presentation.py (17 tests).
+
+VERSION_1_87_CHANGE:
+  - Theme forced by the exe name: StreamDL-clair.exe (light), StreamDL-sombre.exe (dark),
+    StreamDL-natif.exe (classic Windows look, no sv-ttk); any other name follows Windows.
+    The copies are identical files, so they share one Nuitka cache folder (no re-unpacking
+    when switching). get_launcher_path() gives the started exe; get_app_dir() uses it.
+  - To make the test copies: build once, then copy dist\StreamDL.exe to the three names.
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc
