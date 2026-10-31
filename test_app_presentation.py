@@ -3,6 +3,7 @@
 Run: py -3.13 -m unittest -v test_app_presentation.py
 """
 import json
+import statistics
 import tkinter as tk
 import unittest
 from tkinter import ttk
@@ -52,6 +53,33 @@ REAL_INFO = {
         {"format_id": "242", "ext": "webm", "vcodec": "vp9", "acodec": "none", "height": 240,
          "fps": 15, "tbr": 123.838, "filesize": 293080, "protocol": "https"},
     ],
+}
+
+
+# Part of yt-dlp's real -J output for _MK4k-KfWq8 (33 min): "Automatique"
+# gets the Premium 1080p over HLS, whose size yt-dlp does not give.
+PREMIUM_FORMATS = [
+    {"format_id": "251-3", "ext": "webm", "vcodec": "none", "acodec": "opus", "abr": 128.519,
+     "filesize": 32239408, "protocol": "https"},
+    {"format_id": "270", "ext": "mp4", "vcodec": "avc1.640028", "acodec": "none", "height": 1080,
+     "fps": 25.0, "tbr": 4876.675, "protocol": "m3u8_native"},
+    {"format_id": "137", "ext": "mp4", "vcodec": "avc1.640028", "acodec": "none", "height": 1080,
+     "fps": 25, "tbr": 2424.165, "filesize": 608_100_000, "protocol": "https"},
+    {"format_id": "614", "ext": "mp4", "vcodec": "vp09.00.40.08", "acodec": "none", "height": 1080,
+     "fps": 25.0, "tbr": 3188.041, "protocol": "m3u8_native"},
+    {"format_id": "248", "ext": "webm", "vcodec": "vp9", "acodec": "none", "height": 1080,
+     "fps": 25, "tbr": 1465.248, "filesize": 367_500_000, "protocol": "https"},
+    {"format_id": "616", "ext": "mp4", "vcodec": "vp09.00.40.08", "acodec": "none", "height": 1080,
+     "fps": 25.0, "tbr": 5098.958, "protocol": "m3u8_native", "format_note": "Premium"},
+]
+PREMIUM_INFO = {
+    "title": "J'ai corrigé les défauts de ma GT40",
+    "duration": 2007,
+    "format_id": "616+251-3",
+    # yt-dlp's own estimate: the audio only (30,7 Mo).
+    "filesize_approx": 32239408,
+    "formats": PREMIUM_FORMATS,
+    "requested_formats": [PREMIUM_FORMATS[5], PREMIUM_FORMATS[0]],
 }
 
 
@@ -264,9 +292,9 @@ class ThemedIconTests(ErgonomicsTestCase):
     def test_github_icon_is_light_on_the_dark_theme(self):
         with mock.patch.object(APP, "get_launcher_path", return_value="C:/Apps/StreamDL-sombre.exe"):
             self.start_ready_app()
-        self.assertTrue(APP.themed_asset("social_github.png").endswith("social_github_dark.png"))
-        # Icons without a dark variant are used as they are.
-        self.assertTrue(APP.themed_asset("social_youtube.png").endswith("social_youtube.png"))
+        # Every icon has a dark version, without the light disc behind it.
+        for _, icon, _ in APP.SOCIAL_LINKS:
+            self.assertTrue(APP.themed_asset(icon).endswith(icon.replace(".png", "_dark.png")), icon)
 
     def test_regular_icon_on_the_light_theme(self):
         self.start_ready_app()
@@ -415,6 +443,58 @@ class FormatChoicesTests(unittest.TestCase):
         self.assertEqual(APP.human_size(635110), "620,2 Ko")
         self.assertEqual(APP.human_size(3 * 1024 ** 3), "3,0 Go")
         self.assertEqual(APP.human_size(None), "?")
+
+
+class SizeEstimateTests(unittest.TestCase):
+    def test_automatic_size_counts_the_hls_video(self):
+        size = APP.automatic_size(PREMIUM_INFO)
+        # Downloaded for real: a little over 600 Mo.
+        self.assertGreater(size, 550 * 1024 ** 2)
+        self.assertLess(size, 700 * 1024 ** 2)
+        self.assertEqual(APP.format_choices(PREMIUM_INFO)["auto_size"], size)
+        self.assertTrue(APP.build_preview_text(PREMIUM_INFO, False).endswith("~" + APP.human_size(size)))
+
+    def test_hls_bitrate_is_scaled_by_the_direct_downloads_of_the_same_height(self):
+        expected = statistics.median([
+            608_100_000 / (4876.675 * 125 * 2007),  # 270 (HLS) / 137 (direct)
+            367_500_000 / (3188.041 * 125 * 2007),  # 614 (HLS) / 248 (direct)
+        ])
+        factors = APP.hls_size_factors(PREMIUM_FORMATS, 2007)
+        self.assertAlmostEqual(factors[1080], expected)
+        # Other heights use every measure.
+        self.assertAlmostEqual(factors[None], expected)
+        self.assertEqual(APP.hls_size_factors([], 2007), {None: APP.HLS_DEFAULT_FACTOR})
+
+    def test_premium_is_offered_apart(self):
+        video = APP.format_choices(PREMIUM_INFO)["video"]
+        self.assertEqual(video[0]["format"], "616+ba/616")
+        self.assertIn("Premium", video[0]["label"])
+        self.assertEqual([choice["format"] for choice in video], ["616+ba/616", "137+ba/137", "248+ba/248"])
+
+
+class DarkIconTests(unittest.TestCase):
+    def pixels(self, name):
+        from PIL import Image
+
+        return list(Image.open(build_exe.PROJECT_DIR / name).convert("RGBA").getdata())
+
+    def test_every_icon_has_a_dark_version_without_its_light_disc(self):
+        # GitHub's dark version is white on purpose: test_github_is_white...
+        for link_label, icon, url in APP.SOCIAL_LINKS[:-1]:
+            dark = icon.replace(".png", "_dark.png")
+            with self.subTest(icon=dark):
+                self.assertTrue((build_exe.PROJECT_DIR / dark).is_file())
+                # The light version sits on a 20 % white disc: grey on a dark
+                # background. Where only that disc shows, the dark one is clear.
+                disc = [index for index, pixel in enumerate(self.pixels(icon))
+                        if pixel == (255, 255, 255, 51)]
+                self.assertGreater(len(disc), 50)
+                dark_pixels = self.pixels(dark)
+                self.assertEqual({dark_pixels[index][3] for index in disc}, {0})
+
+    def test_github_is_white_on_the_dark_theme(self):
+        colors = {p[:3] for p in self.pixels("social_github_dark.png") if p[3] > 0}
+        self.assertEqual(colors, {(255, 255, 255)})
 
 
 class FormatDialogTests(ErgonomicsTestCase):

@@ -6,6 +6,7 @@ import io
 import json
 import re
 import sys
+import time
 import tokenize
 import unittest
 from pathlib import Path
@@ -205,6 +206,63 @@ class PresetTests(ErgonomicsTestCase):
         with mock.patch.object(self.app, "start_preset") as preset:
             self.app.on_url_return(None)
         preset.assert_called_once_with("video")
+
+
+class LinkAnalysisTests(ErgonomicsTestCase):
+    URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+    INFO = json.dumps({"_type": "video", "title": "Me at the zoo", "uploader": "jawed", "duration": 19,
+                       "filesize_approx": 635110,
+                       "formats": [{"format_id": "251", "acodec": "opus", "vcodec": "none", "ext": "webm"}]})
+
+    def wait(self, seconds):
+        deadline = time.monotonic() + seconds
+        self.pump_until(lambda: time.monotonic() > deadline, timeout=seconds + 5)
+
+    def test_pasted_link_shows_its_size_at_once(self):
+        self.start_ready_app()
+        with mock.patch.object(APP.App, "run_command_json", return_value=(0, self.INFO, "")) as fetch:
+            self.app.url_var.set(self.URL)
+            self.pump_until(lambda: "~620,2 Ko" in self.app.preview_var.get())
+        self.assertEqual(fetch.call_count, 1)
+        self.assertIn("Me at the zoo", self.app.preview_var.get())
+
+    def test_buttons_reuse_the_analysis(self):
+        self.start_ready_app()
+        with mock.patch.object(APP.App, "run_command_json", return_value=(0, self.INFO, "")) as fetch, \
+                mock.patch.object(APP.App, "download_worker") as worker:
+            self.app.url_var.set(self.URL)
+            self.pump_until(lambda: "~620,2 Ko" in self.app.preview_var.get())
+            self.app.start_preset("video")
+            self.pump_until(lambda: worker.called)
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_failed_analysis_stays_quiet_and_is_not_reused(self):
+        self.start_ready_app()
+        with mock.patch.object(APP.App, "run_command_json", return_value=(1, "", "ERROR: private")) as fetch, \
+                mock.patch.object(APP.App, "on_fetch_error") as fetch_error:
+            self.app.url_var.set(self.URL)
+            self.pump_until(lambda: fetch.called)
+            self.wait(0.3)
+            self.assertEqual((self.app.preview_var.get(), self.dialogs), ("", []))
+            self.app.start_preset("video")
+            self.pump_until(lambda: fetch_error.called)
+        self.assertEqual(fetch.call_count, 2)
+
+    def test_only_links_are_analysed(self):
+        self.start_ready_app()
+        with mock.patch.object(APP.App, "run_command_json", return_value=(0, self.INFO, "")) as fetch:
+            self.app.url_var.set("pas un lien")
+            self.wait(1.2)
+        fetch.assert_not_called()
+
+    def test_playlists_are_left_for_the_buttons(self):
+        # Reading a whole playlist can take minutes.
+        self.start_ready_app()
+        self.app.playlist_mode_var.set(True)
+        with mock.patch.object(APP.App, "run_command_json", return_value=(0, self.INFO, "")) as fetch:
+            self.app.url_var.set(self.URL)
+            self.wait(1.2)
+        fetch.assert_not_called()
 
 
 class PreviewReuseTests(ErgonomicsTestCase):

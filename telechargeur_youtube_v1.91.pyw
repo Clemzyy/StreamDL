@@ -3,6 +3,7 @@ import sys
 import re
 import json
 import shutil
+import statistics
 import hashlib
 import threading
 import subprocess
@@ -62,7 +63,7 @@ from tools_manager import (
 # through PATH; child processes such as yt-dlp inherit this setting.
 os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
-APP_VERSION = "1.90"
+APP_VERSION = "1.91"
 APP_TITLE = f"StreamDL v{APP_VERSION}"
 WINDOW_SIZE = "650x780"
 
@@ -161,6 +162,16 @@ COOKIE_BROWSER_IDS = {
 
 # Downloads kept in the Historique tab and in history.json.
 HISTORY_LIMIT = 100
+
+# An HLS stream only announces its peak bitrate: what it downloads is about
+# half of bitrate × duration, when no direct download of the same quality
+# gives the real ratio.
+HLS_DEFAULT_FACTOR = 0.5
+
+# A pasted link is read this long after the last change of the field.
+LINK_ANALYSIS_DELAY_MS = 700
+# The links in yt-dlp's JSON expire after a few hours.
+LINK_ANALYSIS_MAX_AGE = 30 * 60
 
 # Kinds of the format dialog's custom choice, in display order.
 FORMAT_KINDS = (
@@ -547,8 +558,8 @@ def build_preview_text(info, playlist_mode):
         info.get("uploader") or info.get("channel"),
         format_duration(info.get("duration")),
     ]
-    # yt-dlp's estimate for the best quality, the one "Automatique" gets.
-    size = info.get("filesize") or info.get("filesize_approx")
+    # The best quality, the one "Automatique" gets.
+    size = automatic_size(info)
     if size:
         parts.append("~" + human_size(size))
     return " · ".join(str(part) for part in parts if part)
@@ -684,7 +695,16 @@ def human_size(num):
     return f"{value:.1f} {unit}".replace(".", ",")
 
 
-def estimated_size(fmt, duration=None):
+def is_hls(fmt):
+    return "m3u8" in str(fmt.get("protocol") or "")
+
+
+def is_premium(fmt):
+    # YouTube's enhanced bitrate, offered beside the regular one.
+    return "premium" in str(fmt.get("format_note") or "").lower()
+
+
+def estimated_size(fmt, duration=None, hls_factor=HLS_DEFAULT_FACTOR):
     """Size in bytes: exact, estimated by yt-dlp, or bitrate × duration."""
     size = fmt.get("filesize") or fmt.get("filesize_approx")
     if size:
@@ -692,13 +712,83 @@ def estimated_size(fmt, duration=None):
     bitrate = fmt.get("tbr")
     if bitrate and duration:
         # kbit/s -> bytes per second.
-        return int(bitrate * 125 * duration)
+        estimate = bitrate * 125 * duration
+        return int(estimate * hls_factor if is_hls(fmt) else estimate)
     return None
 
 
 def codec_name(codec, names):
     codec = (codec or "").lower()
     return next((name for prefix, name in names if codec.startswith(prefix)), "")
+
+
+def hls_size_factors(formats, duration):
+    """Real size of an HLS stream / its announced bitrate × duration, by height.
+
+    Measured on the qualities offered both ways: the direct download of the
+    same height, codec and frame rate gives the real size. The ratio changes
+    with the height; the None key is for heights without a measure.
+    """
+    ratios = {}
+    direct = [
+        fmt for fmt in formats
+        if not is_hls(fmt) and (fmt.get("filesize") or fmt.get("filesize_approx"))
+    ]
+
+    for stream in formats:
+        codec = codec_name(stream.get("vcodec"), VIDEO_CODEC_NAMES)
+        if (
+            not duration or not is_hls(stream) or is_premium(stream)
+            or not stream.get("tbr") or not stream.get("height") or not codec
+        ):
+            continue
+
+        twin = next(
+            (
+                fmt for fmt in direct
+                if fmt.get("height") == stream["height"]
+                and codec_name(fmt.get("vcodec"), VIDEO_CODEC_NAMES) == codec
+                and round(fmt.get("fps") or 0) == round(stream.get("fps") or 0)
+            ),
+            None
+        )
+        if twin:
+            twin_size = twin.get("filesize") or twin.get("filesize_approx")
+            ratios.setdefault(stream["height"], []).append(
+                twin_size / (stream["tbr"] * 125 * duration)
+            )
+
+    factors = {
+        height: statistics.median(values)
+        for height, values in ratios.items()
+    }
+    every_ratio = [ratio for values in ratios.values() for ratio in values]
+    factors[None] = (
+        statistics.median(every_ratio) if every_ratio else HLS_DEFAULT_FACTOR
+    )
+    return factors
+
+
+def format_size(fmt, duration, factors):
+    return estimated_size(
+        fmt,
+        duration,
+        factors.get(fmt.get("height"), factors[None])
+    )
+
+
+def automatic_size(info):
+    """Estimated size of what "Automatique" downloads: yt-dlp's own choice.
+
+    yt-dlp's filesize_approx leaves out the formats it has no size for, such
+    as an HLS video: it can give the audio size alone.
+    """
+    duration = info.get("duration")
+    factors = hls_size_factors(info.get("formats") or [], duration)
+    # Video and audio merged, or a single format described by info itself.
+    selected = info.get("requested_formats") or [info]
+    sizes = [format_size(fmt, duration, factors) for fmt in selected]
+    return sum(sizes) if all(sizes) else None
 
 
 def video_choice_label(fmt, size, with_ext):
@@ -710,6 +800,8 @@ def video_choice_label(fmt, size, with_ext):
     if fmt.get("fps"):
         parts.append(f"{round(fmt['fps'])} i/s")
     parts.append(codec_name(fmt.get("vcodec"), VIDEO_CODEC_NAMES))
+    if is_premium(fmt):
+        parts.append("Premium")
     if with_ext:
         parts.append(fmt.get("ext"))
     if size:
@@ -754,13 +846,15 @@ def format_choices(info):
     if described:
         formats = described
 
+    factors = hls_size_factors(formats, duration)
     audio_formats = [
         fmt for fmt in formats
         if fmt.get("vcodec") == "none" and fmt.get("acodec") != "none"
     ]
     # yt-dlp lists the formats from the worst to the best.
     best_audio_size = (
-        estimated_size(audio_formats[-1], duration) if audio_formats else None
+        format_size(audio_formats[-1], duration, factors)
+        if audio_formats else None
     )
 
     candidates = {kind: [] for kind, _ in FORMAT_KINDS}
@@ -776,7 +870,7 @@ def format_choices(info):
 
     for fmt in formats:
         format_id = str(fmt["format_id"])
-        size = estimated_size(fmt, duration)
+        size = format_size(fmt, duration, factors)
         has_video = fmt.get("vcodec") != "none"
         has_audio = fmt.get("acodec") != "none"
 
@@ -797,12 +891,12 @@ def format_choices(info):
     def preference(fmt):
         # Same quality offered twice (HLS copy): the direct download wins.
         return (
-            "m3u8" not in str(fmt.get("protocol") or ""),
+            not is_hls(fmt),
             bool(fmt.get("filesize")),
             fmt.get("tbr") or 0,
         )
 
-    choices = {"auto_size": info.get("filesize") or info.get("filesize_approx")}
+    choices = {"auto_size": automatic_size(info)}
 
     for kind, _ in FORMAT_KINDS:
         best = {}
@@ -814,6 +908,7 @@ def format_choices(info):
                     fmt.get("height"),
                     round(fmt.get("fps") or 0),
                     codec_name(fmt.get("vcodec"), VIDEO_CODEC_NAMES) or fmt.get("vcodec"),
+                    is_premium(fmt),
                 )
             if key not in best or preference(fmt) > preference(best[key][0]):
                 best[key] = (fmt, choice)
@@ -1514,12 +1609,19 @@ class App:
         self.current_formats_list = []
         self.social_icon_images = []
         self.social_buttons = []
+        # yt-dlp's JSON for the last link read, shared by fetch_info() callers.
+        self.analysis_lock = threading.Lock()
+        self.analysis = None
+        self.analysis_after_id = None
 
         self.resolve_tools()
         self.build_ui()
         bind_edit_menus(self.root, self.theme_menu_items)
         self.root.bind("<Button-3>", self.show_window_menu, add="+")
         self.load_history()
+        # The link is read as soon as it is pasted: preview and size at once.
+        self.url_var.trace_add("write", self.schedule_link_analysis)
+        self.playlist_mode_var.trace_add("write", self.schedule_link_analysis)
         self.render_tools_status()
         self.enable_choose_format_button()
         self.root.bind("<Activate>", self.auto_paste_clipboard, add="+")
@@ -2097,6 +2199,8 @@ class App:
             self.enable_choose_format_button()
         if self.start_blocked_by_tools:
             self.enable_start_button()
+        # A link pasted before the tools were ready is read now.
+        self.schedule_link_analysis()
 
     def start_tools_worker(self):
         if self.tools_worker_running:
@@ -2529,6 +2633,8 @@ class App:
 
     def on_application_close(self):
         self.root.after_cancel(self.tools_worker_after_id)
+        if self.analysis_after_id is not None:
+            self.root.after_cancel(self.analysis_after_id)
         if self.current_process is not None:
             # A download left running would keep writing into the folder.
             kill_process_tree(self.current_process)
@@ -3474,29 +3580,124 @@ class App:
             daemon=True
         ).start()
 
+    def info_command(self, url, playlist_mode, cookie_source):
+        cmd = find_downloader(self.tool_path("yt-dlp")) + [
+            "-J",
+            "--yes-playlist" if playlist_mode else "--no-playlist",
+        ]
+
+        # Without ffmpeg, yt-dlp would size a single lower-quality file
+        # instead of the merged best quality "Automatique" downloads.
+        ffmpeg_path = find_ffmpeg(self.tool_path("ffmpeg"))
+        if ffmpeg_path:
+            cmd.extend(["--ffmpeg-location", ffmpeg_path])
+
+        cmd.extend(
+            self.build_ytdlp_runtime_options(cookie_source)
+        )
+        # "--" ends the options: the URL is never read as one.
+        cmd.extend(["--", url])
+        return cmd
+
+    def fetch_info(self, url, playlist_mode, cookie_source):
+        """yt-dlp's JSON for a link: (returncode, stdout, stderr).
+
+        Read once for the analysis started when the link is pasted and for
+        the buttons used next: a second caller waits for the first one.
+        """
+        key = (url, playlist_mode, cookie_source)
+
+        with self.analysis_lock:
+            entry = self.analysis
+            reuse = (
+                entry is not None
+                and entry["key"] == key
+                and time.monotonic() - entry["time"] < LINK_ANALYSIS_MAX_AGE
+            )
+            if not reuse:
+                entry = {
+                    "key": key,
+                    "time": time.monotonic(),
+                    "done": threading.Event(),
+                    "result": None,
+                }
+                self.analysis = entry
+
+        if reuse:
+            entry["done"].wait()
+            return entry["result"]
+
+        try:
+            entry["result"] = self.run_command_json(
+                self.info_command(url, playlist_mode, cookie_source)
+            )
+
+        except Exception as e:
+            entry["result"] = (-1, "", str(e))
+
+        finally:
+            if entry["result"] is None or entry["result"][0] != 0:
+                # A failure is never reused: the next attempt reads again.
+                with self.analysis_lock:
+                    if self.analysis is entry:
+                        self.analysis = None
+            entry["done"].set()
+
+        return entry["result"]
+
+    def schedule_link_analysis(self, *args):
+        # Called at each change of the field: read once the typing stops.
+        if self.analysis_after_id is not None:
+            self.root.after_cancel(self.analysis_after_id)
+
+        self.analysis_after_id = self.root.after(
+            LINK_ANALYSIS_DELAY_MS,
+            self.start_link_analysis
+        )
+
+    def start_link_analysis(self):
+        self.analysis_after_id = None
+        url = self.url_var.get().strip()
+
+        if not re.match(r"https?://", url, re.IGNORECASE):
+            self.show_preview("")
+            return
+
+        # A whole playlist can take minutes to read: left to the buttons.
+        if self.playlist_mode_var.get() or not self.tools_ready_for_formats():
+            return
+
+        self.show_preview("Analyse du lien...")
+
+        threading.Thread(
+            target=self.link_analysis_worker,
+            args=(url, self.cookie_source_from_main_ui()),
+            daemon=True
+        ).start()
+
+    def link_analysis_worker(self, url, cookie_source):
+        text = ""
+
+        try:
+            returncode, stdout_text, _ = self.fetch_info(url, False, cookie_source)
+            if returncode == 0:
+                text = build_preview_text(json.loads(stdout_text), False)
+
+        except Exception:
+            # Quiet: the buttons explain what went wrong.
+            text = ""
+
+        self.root.after(0, lambda: self.show_link_analysis(url, text))
+
+    def show_link_analysis(self, url, text):
+        # Another link may have been pasted meanwhile.
+        if self.url_var.get().strip() == url:
+            self.show_preview(text)
+
     def fetch_formats_worker(self, url, playlist_mode, cookie_source):
         try:
-            downloader = find_downloader(self.tool_path("yt-dlp"))
-
-            cmd = downloader + [
-                "-J",
-                "--yes-playlist" if playlist_mode else "--no-playlist",
-            ]
-
-            # Without ffmpeg, yt-dlp would size a single lower-quality file
-            # instead of the merged best quality "Automatique" downloads.
-            ffmpeg_path = find_ffmpeg(self.tool_path("ffmpeg"))
-            if ffmpeg_path:
-                cmd.extend(["--ffmpeg-location", ffmpeg_path])
-
-            cmd.extend(
-                self.build_ytdlp_runtime_options(cookie_source)
-            )
-            # "--" ends the options: the URL is never read as one.
-            cmd.extend(["--", url])
-
             returncode, stdout_text, stderr_text = (
-                self.run_command_json(cmd)
+                self.fetch_info(url, playlist_mode, cookie_source)
             )
 
             if returncode != 0:

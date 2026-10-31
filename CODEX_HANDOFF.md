@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.90.pyw
-  current_app_label: "StreamDL v1.90 (window title; APP_VERSION follows the source number)"
-  next_source_version: "1.91"
+  current_source: telechargeur_youtube_v1.91.pyw
+  current_app_label: "StreamDL v1.91 (window title; APP_VERSION follows the source number)"
+  next_source_version: "1.92"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -44,8 +44,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.88.pyw: clair par défaut, fenêtre affichée une seule fois
     - telechargeur_youtube_v1.89.pyw: yt-dlp en version dossier, téléchargement depuis le JSON de l'aperçu
     - telechargeur_youtube_v1.90.pyw: retours d'un ami (clic droit, formats, tailles, historique, Opera GX), thème au clic droit
+    - telechargeur_youtube_v1.91.pyw: lien analysé dès le collage, taille des vidéos HLS, icônes du mode sombre
   files_expected:
-    - telechargeur_youtube_v1.90.pyw
+    - telechargeur_youtube_v1.91.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
@@ -344,6 +345,26 @@ VERSION_1_90_CHANGE (feedback from a friend using an older version):
     .sha256.txt beside it, history.json written. Captures of the dialog and the runtime dark
     switch checked; the dark title bar attribute reads 1 after the switch (PrintWindow of a
     transparent window does not draw it).
+
+VERSION_1_91_CHANGE:
+  - Size of "Automatique" was wrong for _MK4k-KfWq8 (30,7 Mo shown, >600 Mo real): yt-dlp picks
+    the Premium 1080p over HLS (616), which has no size, and its filesize_approx then counts the
+    audio alone. automatic_size() now sums yt-dlp's requested_formats with estimated_size(); an
+    HLS format is sized from its announced (peak) bitrate x duration x a factor measured on the
+    qualities offered both as HLS and as a direct download of known size, per height
+    (hls_size_factors: 0.48 at 1080p for that video, about 0.36-0.48 below; 0.5 when nothing can
+    be measured). Result 614,2 Mo. Premium formats are listed apart ("· Premium").
+  - The link is read as soon as it is pasted or typed (url_var trace, 0.7 s after the last change):
+    the preview shows title, channel, duration and the automatic size without any click.
+    fetch_info() shares that yt-dlp -J result with the buttons (same link, playlist mode and
+    cookie source, 30 min at most; a second caller waits for the first); failures are never
+    reused and the paste analysis stays quiet (the buttons show the errors). Playlists are not
+    read on paste (minutes for a long one). Real test: preview with "~614,2 Mo" 6.4 s after the
+    paste, then "Vidéo MP4" started the download 0.17 s after the click, with one -J call.
+  - Dark theme icons: social_tiktok/youtube/pc32/paypal_dark.png are the light icons without
+    their white disc at 20 % opacity (grey on dark), "un-composited" pixel by pixel so the
+    logos keep their soft edges; social_github_dark.png is now pure white. The light theme keeps
+    the original icons.
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc
