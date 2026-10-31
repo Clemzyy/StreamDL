@@ -23,6 +23,7 @@ from auth_support import (
     delete_temporary_cookie_file,
     find_chrome_download_folder,
     find_firefox,
+    find_windows_downloads_folder,
     sanitize_technical_text,
     validate_netscape_cookie_file,
 )
@@ -53,7 +54,8 @@ from tools_manager import (
 # through PATH; child processes such as yt-dlp inherit this setting.
 os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
-APP_TITLE = "Téléchargeur Vidéo V7.3 by Clemzy"
+APP_VERSION = "1.85"
+APP_TITLE = f"Téléchargeur Vidéo v{APP_VERSION} by Clemzy"
 WINDOW_SIZE = "650x780"
 
 PROGRESS_UI_INTERVAL = 0.150
@@ -64,6 +66,32 @@ TOOL_LABELS = {
     "deno": "Deno",
     "ffmpeg": "ffmpeg",
 }
+
+# One-click shortcuts: format asked to yt-dlp, then conversions applied.
+PRESETS = {
+    "video": {
+        "format": "BEST_AUTO",
+        "audio_conversion": "MP3",
+        "video_conversion": "Aucune conversion",
+        "label": "Vidéo MP4 (meilleure qualité)",
+    },
+    "audio": {
+        "format": "BEST_AUDIO",
+        "audio_conversion": "MP3",
+        "video_conversion": "Aucune conversion",
+        "label": "Audio MP3",
+    },
+}
+
+SUCCESS_COLOR = "#1E7B34"
+CANCEL_COLOR = "#8A5200"
+
+# Files written by yt-dlp, removed if the download is cancelled.
+YTDLP_OUTPUT_RES = (
+    re.compile(r"^\[download\] Destination: (.+)$"),
+    re.compile(r'^\[Merger\] Merging formats into "(.+)"$'),
+)
+CLIPBOARD_URL_RE = re.compile(r"https?://\S{1,2000}", re.IGNORECASE)
 
 AUDIO_CONVERSION_OPTIONS = [
     "Aucune conversion",
@@ -109,7 +137,7 @@ CHROME_COOKIE_EXPORT_EXTENSION_URL = (
 AUTH_ERROR_SUMMARIES = {
     AuthErrorType.AGE_RESTRICTED: (
         "Cette vidéo nécessite probablement une vérification d'âge.",
-        "Le site demande de vérifier votre compte ou votre âge avant de donner accès à la vidéo.",
+        "Le site demande de vérifier ton compte ou ton âge avant de donner accès à la vidéo.",
     ),
     AuthErrorType.LOGIN_REQUIRED: (
         "Cette vidéo nécessite probablement une connexion.",
@@ -121,11 +149,11 @@ AUTH_ERROR_SUMMARIES = {
     ),
     AuthErrorType.COOKIE_EXTRACTION_FAILED: (
         "Impossible de lire les cookies du navigateur choisi.",
-        "Vos cookies ne sont pas endommagés : Windows ou le navigateur peut empêcher une application externe de les lire.",
+        "Tes cookies ne sont pas endommagés : Windows ou le navigateur peut empêcher une application externe de les lire.",
     ),
     AuthErrorType.COOKIE_DECRYPTION_FAILED: (
         "Impossible de déchiffrer les cookies du navigateur choisi.",
-        "Vos cookies ne sont pas endommagés : la protection de Windows ou du navigateur peut empêcher yt-dlp de les utiliser.",
+        "Tes cookies ne sont pas endommagés : la protection de Windows ou du navigateur peut empêcher yt-dlp de les utiliser.",
     ),
     AuthErrorType.COOKIES_EXPIRED_OR_INVALID: (
         "Les cookies utilisés ne semblent plus utilisables.",
@@ -133,7 +161,7 @@ AUTH_ERROR_SUMMARIES = {
     ),
     AuthErrorType.UNKNOWN_AUTH_ERROR: (
         "Cette vidéo semble nécessiter une authentification.",
-        "Le site demande probablement de vérifier votre compte, votre âge ou votre session.",
+        "Le site demande probablement de vérifier ton compte, ton âge ou ta session.",
     ),
 }
 
@@ -354,6 +382,69 @@ def open_folder(path):
             subprocess.Popen(["xdg-open", path])
     except Exception as e:
         messagebox.showwarning("Dossier", f"Impossible d'ouvrir le dossier.\n\n{e}")
+
+
+def open_path(path):
+    try:
+        os.startfile(path)  # type: ignore[attr-defined]
+    except Exception as e:
+        messagebox.showwarning("Ouverture", f"Impossible d'ouvrir :\n{path}\n\n{e}")
+
+
+def kill_process_tree(process):
+    # yt-dlp.exe starts a second process, which starts ffmpeg: stopping only
+    # the first one would leave the download running.
+    if process.poll() is not None:
+        return
+
+    if sys.platform.startswith("win"):
+        taskkill = os.path.join(
+            os.environ.get("SystemRoot", r"C:\Windows"),
+            "System32",
+            "taskkill.exe"
+        )
+        try:
+            subprocess.run(
+                [taskkill, "/F", "/T", "/PID", str(process.pid)],
+                capture_output=True,
+                timeout=15,
+                **get_hidden_process_kwargs(),
+            )
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    process.kill()
+
+
+class AppSettings:
+    """Small preferences stored in %LOCALAPPDATA%\\StreamDL\\settings.json."""
+
+    def __init__(self, folder):
+        self.path = os.path.join(folder, "settings.json")
+
+    def read(self):
+        try:
+            with open(self.path, encoding="utf-8") as settings_file:
+                data = json.load(settings_file)
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def get(self, key):
+        return self.read().get(key)
+
+    def set(self, key, value):
+        data = self.read()
+        data[key] = value
+        temporary_path = self.path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            with open(temporary_path, "w", encoding="utf-8") as settings_file:
+                json.dump(data, settings_file, ensure_ascii=False, indent=2)
+            os.replace(temporary_path, self.path)
+        except OSError:
+            pass
 
 
 def human_size(num):
@@ -645,7 +736,7 @@ class AuthenticationAssistant(tk.Toplevel):
         tk.Label(
             action_frame,
             text=(
-                "Si vous êtes connecté au site dans Firefox, yt-dlp utilisera temporairement "
+                "Si tu es connecté au site dans Firefox, yt-dlp utilisera temporairement "
                 "les cookies de cette session. Aucune copie n'est conservée."
             ),
             fg="#555555",
@@ -663,9 +754,9 @@ class AuthenticationAssistant(tk.Toplevel):
         tk.Label(
             action_frame,
             text=(
-                "Étapes : installez l'extension, cliquez sur « Export All Cookies », ouvrez le "
-                "dossier de téléchargement Chrome ci-dessous, puis choisissez le fichier. "
-                "Préférez Firefox si possible et n'utilisez cette méthode que sur votre ordinateur personnel."
+                "Étapes : installe l'extension, clique sur « Export All Cookies », ouvre le "
+                "dossier de téléchargement Chrome ci-dessous, puis choisis le fichier. "
+                "Préfère Firefox si possible et n'utilise cette méthode que sur ton ordinateur personnel."
             ),
             fg="#8A5200",
             anchor="w",
@@ -742,15 +833,15 @@ class AuthenticationAssistant(tk.Toplevel):
             "Firefox reste la méthode recommandée.\n\n"
             "Cette solution manuelle utilise une extension Chrome pour créer un fichier "
             "cookies.txt lisible par yt-dlp. Ce fichier peut contenir des données donnant "
-            "accès à votre session sur plusieurs sites : traitez-le comme un mot de passe.\n\n"
-            "Ne l'utilisez pas sur un ordinateur public, partagé ou professionnel, et ne "
-            "transmettez jamais le fichier à quelqu'un.\n\n"
+            "accès à ta session sur plusieurs sites : traite-le comme un mot de passe.\n\n"
+            "Ne l'utilise pas sur un ordinateur public, partagé ou professionnel, et ne "
+            "transmets jamais le fichier à quelqu'un.\n\n"
             "Le navigateur va ouvrir la page Chrome Web Store de « Get cookies.txt LOCALLY », "
             "citée par la FAQ de yt-dlp.\n\n"
-            "Après son installation, ouvrez l'extension dans Chrome et cliquez sur le grand bouton "
+            "Après son installation, ouvre l'extension dans Chrome et clique sur le grand bouton "
             "bleu « Export All Cookies ». Chrome enregistrera le fichier dans son dossier de "
-            "téléchargement. Utilisez ensuite le bouton « Ouvrir le dossier de téléchargement Chrome » "
-            "dans cette fenêtre, puis choisissez le fichier créé ici. Le logiciel en utilisera "
+            "téléchargement. Utilise ensuite le bouton « Ouvrir le dossier de téléchargement Chrome » "
+            "dans cette fenêtre, puis choisis le fichier créé ici. Le logiciel en utilisera "
             "uniquement une copie temporaire limitée à YouTube.",
             parent=self,
         )
@@ -770,7 +861,7 @@ class AuthenticationAssistant(tk.Toplevel):
         if not opened:
             messagebox.showwarning(
                 "Ouverture du navigateur",
-                "Le navigateur n'a pas pu être ouvert automatiquement. Vous pouvez chercher "
+                "Le navigateur n'a pas pu être ouvert automatiquement. Tu peux chercher "
                 "« Get cookies.txt LOCALLY » dans le Chrome Web Store.",
                 parent=self,
             )
@@ -781,7 +872,7 @@ class AuthenticationAssistant(tk.Toplevel):
             messagebox.showinfo(
                 "Dossier Chrome non détecté",
                 "Ni le dossier configuré dans Chrome ni le dossier Téléchargements Windows n'ont été détectés. "
-                "Après l'export, utilisez « Choisir un fichier cookies.txt » pour sélectionner "
+                "Après l'export, utilise « Choisir un fichier cookies.txt » pour sélectionner "
                 "manuellement le fichier téléchargé.",
                 parent=self,
             )
@@ -802,11 +893,11 @@ class AuthenticationAssistant(tk.Toplevel):
             "Certaines vidéos demandent une session connectée, une vérification d'âge ou une vérification anti-robot.\n\n"
             "Méthodes disponibles\n"
             "Firefox est recommandé : il évite souvent les limites des navigateurs Chromium sous Windows. "
-            "Vous pouvez aussi sélectionner un fichier Netscape cookies.txt. En dernier recours, le bouton "
+            "Tu peux aussi sélectionner un fichier Netscape cookies.txt. En dernier recours, le bouton "
             "« Exporter un cookies.txt depuis Chrome » ouvre une extension citée par la FAQ officielle de yt-dlp. "
-            "Installez-la uniquement sur un ordinateur personnel. Dans l'extension, cliquez sur « Export All Cookies », "
-            "ouvrez ensuite le dossier de téléchargement Chrome avec le bouton prévu, puis sélectionnez le fichier ici. "
-            "Un cookies.txt peut contenir des sessions de plusieurs sites : ne le partagez pas, et évitez de mémoriser "
+            "Installe-la uniquement sur un ordinateur personnel. Dans l'extension, clique sur « Export All Cookies », "
+            "ouvre ensuite le dossier de téléchargement Chrome avec le bouton prévu, puis sélectionne le fichier ici. "
+            "Un cookies.txt peut contenir des sessions de plusieurs sites : ne le partage pas, et évite de mémoriser "
             "son emplacement sur un ordinateur partagé.\n\n"
             "Chromium sous Windows\n"
             "Chrome et plusieurs navigateurs Chromium utilisent des protections comme DPAPI et App-Bound Encryption. "
@@ -869,6 +960,16 @@ class App:
         self.tools_worker_running = False
         self.choose_blocked_by_tools = False
         self.start_blocked_by_tools = False
+        self.settings = AppSettings(os.path.dirname(self.tool_storage_dir))
+        self.folder_var.set(self.initial_download_folder())
+        self.pending_preset = None
+        self.current_process = None
+        self.cancel_requested = False
+        self.current_download_outputs = []
+        self.last_auto_pasted = None
+        self.last_result_file = None
+        self.last_result_folder = None
+        self.show_details_var = tk.BooleanVar(value=False)
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_application_close)
 
@@ -892,6 +993,7 @@ class App:
         self.build_ui()
         self.render_tools_status()
         self.enable_choose_format_button()
+        self.root.bind("<Activate>", self.auto_paste_clipboard, add="+")
         # Started once the window is drawn, so it never delays the first paint.
         self.tools_worker_after_id = self.root.after(
             300,
@@ -968,6 +1070,7 @@ class App:
         )
 
         self.url_entry.focus_set()
+        self.url_entry.bind("<Return>", self.on_url_return)
 
         tk.Button(
             url_frame,
@@ -982,18 +1085,18 @@ class App:
             variable=self.playlist_mode_var
         ).pack(fill="x", padx=12, pady=(6, 0))
 
-        cookies_frame = tk.Frame(self.root)
-        cookies_frame.pack(fill="x", padx=12, pady=(4, 0))
+        self.cookies_frame = tk.Frame(self.root)
+        self.cookies_frame.pack(fill="x", padx=12, pady=(4, 0))
 
         tk.Label(
-            cookies_frame,
+            self.cookies_frame,
             text="Cookies YouTube :",
             width=18,
             anchor="w"
         ).pack(side="left")
 
         self.cookies_browser_combo = ttk.Combobox(
-            cookies_frame,
+            self.cookies_frame,
             textvariable=self.cookies_browser_var,
             values=COOKIE_BROWSER_OPTIONS,
             state="readonly",
@@ -1002,18 +1105,18 @@ class App:
         self.cookies_browser_combo.pack(side="left", padx=(8, 0))
         self.cookies_browser_combo.current(0)
 
-        tk.Label(
-            cookies_frame,
-            text="(choisis ton navigateur si YouTube demande une connexion)",
-            fg="#666666",
-            anchor="w"
-        ).pack(side="left", padx=(12, 0))
-
         tk.Button(
-            cookies_frame,
+            self.cookies_frame,
             text="Aide à l'authentification",
             command=self.open_authentication_assistant_manually,
-        ).pack(side="right")
+        ).pack(side="left", padx=(12, 0))
+
+        tk.Label(
+            self.root,
+            text="Choisis ton navigateur seulement si YouTube demande une connexion.",
+            fg="#666666",
+            anchor="w"
+        ).pack(fill="x", padx=12)
 
         button_style = ttk.Style()
         button_style.configure(
@@ -1022,18 +1125,35 @@ class App:
             padding=(18, 8)
         )
 
-        self.choose_format_btn = ttk.Button(
-            self.root,
-            text="Choisir le format",
-            command=self.choose_format_flow,
-            style="Primary.TButton",
-            width=22
-        )
+        # One click for the usual cases; « Format avancé... » keeps the full list.
+        self.actions_frame = tk.Frame(self.root)
+        self.actions_frame.pack(padx=12, pady=(8, 4))
 
-        self.choose_format_btn.pack(
-            padx=12,
-            pady=(10, 8)
+        self.video_preset_btn = ttk.Button(
+            self.actions_frame,
+            text="Vidéo MP4",
+            command=lambda: self.start_preset("video"),
+            style="Primary.TButton",
+            width=14
         )
+        self.video_preset_btn.pack(side="left")
+
+        self.audio_preset_btn = ttk.Button(
+            self.actions_frame,
+            text="Audio MP3",
+            command=lambda: self.start_preset("audio"),
+            style="Primary.TButton",
+            width=14
+        )
+        self.audio_preset_btn.pack(side="left", padx=(8, 0))
+
+        self.choose_format_btn = ttk.Button(
+            self.actions_frame,
+            text="Format avancé...",
+            command=self.choose_format_flow,
+            width=16
+        )
+        self.choose_format_btn.pack(side="left", padx=(8, 0), ipady=4)
 
         audio_options_frame = tk.Frame(self.root)
         audio_options_frame.pack(fill="x", padx=12, pady=(8, 0))
@@ -1127,35 +1247,55 @@ class App:
             variable=self.create_sha256_var,
         ).pack(fill="x", padx=12, pady=(6, 0))
 
+        start_frame = tk.Frame(self.root)
+        start_frame.pack(padx=12, pady=(8, 4))
+
         self.start_btn = ttk.Button(
-            self.root,
-            text="Lancer le telechargement",
+            start_frame,
+            text="Lancer le téléchargement",
             command=self.start_download_flow,
             style="Primary.TButton",
             width=26
         )
-
-        self.start_btn.pack(
-            padx=12,
-            pady=(16, 8)
-        )
+        self.start_btn.pack(side="left")
         self.start_btn.config(state="disabled")
+
+        self.cancel_btn = ttk.Button(
+            start_frame,
+            text="Annuler",
+            command=self.cancel_download,
+            width=10,
+            state="disabled"
+        )
+        self.cancel_btn.pack(side="left", padx=(8, 0), ipady=4)
 
         self.set_conversion_controls("none")
 
+        status_row = tk.Frame(self.root)
+        status_row.pack(fill="x", padx=12, pady=(2, 4))
+
         self.status_label = tk.Label(
-            self.root,
+            status_row,
             text="Prêt.",
             anchor="w",
             justify="left",
             fg="#333333"
         )
+        self.status_label.pack(side="left", fill="x", expand=True)
 
-        self.status_label.pack(
-            fill="x",
-            padx=12,
-            pady=(4, 6)
+        # Shown after a download, instead of a dialog box.
+        self.result_frame = tk.Frame(status_row)
+        self.open_result_file_btn = tk.Button(
+            self.result_frame,
+            text="Ouvrir le fichier",
+            command=self.open_result_file
         )
+        self.open_result_file_btn.pack(side="left")
+        tk.Button(
+            self.result_frame,
+            text="Ouvrir le dossier",
+            command=self.open_result_folder
+        ).pack(side="left", padx=(6, 0))
 
         progress_outer = tk.Frame(self.root)
         progress_outer.pack(fill="x", padx=12, pady=(0, 8))
@@ -1211,7 +1351,7 @@ class App:
             history_frame,
             columns=history_columns,
             show="headings",
-            height=4
+            height=3
         )
 
         self.history_tree.heading("time", text="Heure")
@@ -1264,11 +1404,25 @@ class App:
             command=self.open_selected_history_file
         ).pack(fill="x", pady=(6, 0))
 
+        log_header = tk.Frame(self.root)
+        log_header.pack(fill="x", padx=12)
+
+        tk.Label(log_header, text="Journal", anchor="w").pack(side="left")
+
+        tk.Checkbutton(
+            log_header,
+            text="Afficher les détails techniques",
+            variable=self.show_details_var,
+            command=self.toggle_details_visibility
+        ).pack(side="right")
+
         self.log_box = tk.Text(
             self.root,
             height=14,
             wrap="word"
         )
+        # Raw yt-dlp and ffmpeg output, hidden unless the user asks for it.
+        self.log_box.tag_configure("detail", elide=True, foreground="#777777")
 
         self.log_box.pack(
             fill="both",
@@ -1284,14 +1438,21 @@ class App:
 
         self.log_box.config(state="disabled")
 
-    def append_log(self, text):
+    def append_log(self, text, detail=False):
         self.log_box.config(state="normal")
-        self.log_box.insert("end", text + "\n")
+        self.log_box.insert("end", text + "\n", ("detail",) if detail else ())
         self.log_box.see("end")
         self.log_box.config(state="disabled")
 
-    def append_log_threadsafe(self, text):
-        self.root.after(0, lambda: self.append_log(text))
+    def append_log_threadsafe(self, text, detail=False):
+        self.root.after(0, lambda: self.append_log(text, detail))
+
+    def toggle_details_visibility(self):
+        self.log_box.tag_configure(
+            "detail",
+            elide=not self.show_details_var.get()
+        )
+        self.log_box.see("end")
 
     def tool_path(self, name):
         copy = self.tool_copies.get(name)
@@ -1360,7 +1521,11 @@ class App:
     def enable_choose_format_button(self):
         ready = self.tools_ready_for_formats()
         self.choose_format_btn.config(state="normal" if ready else "disabled")
-        self.choose_blocked_by_tools = not ready
+        # The shortcuts also need ffmpeg: merging into MP4, converting to MP3.
+        presets_ready = self.tools_ready_for_download()
+        for button in (self.video_preset_btn, self.audio_preset_btn):
+            button.config(state="normal" if presets_ready else "disabled")
+        self.choose_blocked_by_tools = not presets_ready
 
     def enable_start_button(self):
         ready = self.tools_ready_for_download()
@@ -1370,9 +1535,12 @@ class App:
     def disable_action_buttons(self):
         # The running step re-enables the buttons itself when it ends.
         self.choose_format_btn.config(state="disabled")
+        self.video_preset_btn.config(state="disabled")
+        self.audio_preset_btn.config(state="disabled")
         self.start_btn.config(state="disabled")
         self.choose_blocked_by_tools = False
         self.start_blocked_by_tools = False
+        self.hide_result()
 
     def on_tools_changed(self):
         if self.choose_blocked_by_tools:
@@ -1623,6 +1791,9 @@ class App:
         if selected_format == "BEST_AUTO":
             return "video"
 
+        if selected_format == "BEST_AUDIO":
+            return "audio"
+
         for item in self.current_formats_list:
             if item["format_id"] == selected_format:
                 if item["type"] == "audio only":
@@ -1716,7 +1887,7 @@ class App:
             messagebox.showinfo(
                 "Firefox non détecté",
                 "Firefox n'a pas été détecté sur cet ordinateur. "
-                "Vous pouvez sélectionner un fichier cookies.txt à la place.",
+                "Tu peux sélectionner un fichier cookies.txt à la place.",
             )
             return
         self.start_authentication_format_flow(CookieSource.browser_source("firefox"))
@@ -1811,6 +1982,9 @@ class App:
 
     def on_application_close(self):
         self.root.after_cancel(self.tools_worker_after_id)
+        if self.current_process is not None:
+            # A download left running would keep writing into the folder.
+            kill_process_tree(self.current_process)
         self.cleanup_all_temporary_cookie_sources()
         self.root.destroy()
 
@@ -1819,7 +1993,10 @@ class App:
             "Assistant d'authentification : essai avec "
             + self.authentication_source_log_label(cookie_source)
         )
-        self.choose_format_flow(cookie_source=cookie_source)
+        self.choose_format_flow(
+            cookie_source=cookie_source,
+            preset=self.pending_preset
+        )
 
     def offer_cookie_file_preference(self, cookie_source):
         if (
@@ -1837,7 +2014,7 @@ class App:
             "Protéger le fichier cookies.txt",
             "L'authentification a fonctionné avec une copie temporaire limitée à YouTube. "
             "Cette copie sera supprimée automatiquement après le téléchargement.\n\n"
-            "Voulez-vous aussi supprimer maintenant le fichier exporté d'origine ?\n\n"
+            "Veux-tu aussi supprimer maintenant le fichier exporté d'origine ?\n\n"
             "Attention : ce fichier peut contenir des cookies d'autres sites. Cette suppression "
             "est définitive dans l'application, mais ne constitue pas un effacement forensic "
             "garanti sur un SSD.",
@@ -1863,7 +2040,7 @@ class App:
         remember = messagebox.askyesno(
             "cookies.txt fonctionnel",
             "L'authentification avec ce fichier a fonctionné.\n\n"
-            "Voulez-vous mémoriser uniquement son emplacement pour le réutiliser plus tard ?\n\n"
+            "Veux-tu mémoriser uniquement son emplacement pour le réutiliser plus tard ?\n\n"
             "Le fichier n'est pas copié. Il doit rester à cet emplacement. À chaque utilisation, "
             "le logiciel créera uniquement une copie temporaire limitée à YouTube.",
         )
@@ -1887,7 +2064,7 @@ class App:
 
         item = {
             "time": time.strftime("%H:%M:%S"),
-            "file": file_path or "(fichier non detecte)",
+            "file": file_path or "(fichier non détecté)",
             "conversion": conversion_text,
             "folder": folder,
         }
@@ -1960,7 +2137,7 @@ class App:
                 "end-1c linestart"
             )
 
-            self.log_box.insert("end", text + "\n")
+            self.log_box.insert("end", text + "\n", ("detail",))
             self.progress_log_line_exists = True
 
         else:
@@ -1968,7 +2145,7 @@ class App:
             end = self.log_box.index(f"{start} lineend +1c")
 
             self.log_box.delete(start, end)
-            self.log_box.insert(start, text + "\n")
+            self.log_box.insert(start, text + "\n", ("detail",))
 
         self.log_box.see("end")
         self.log_box.config(state="disabled")
@@ -1983,8 +2160,8 @@ class App:
         self.progress_log_start_index = None
         self.progress_log_line_exists = False
 
-    def set_status(self, text):
-        self.status_label.config(text=text)
+    def set_status(self, text, color="#333333"):
+        self.status_label.config(text=text, fg=color)
         self.root.update_idletasks()
 
     def set_status_threadsafe(self, text):
@@ -2077,6 +2254,11 @@ class App:
         stripped = line.strip()
         lower_line = line.lower()
 
+        for pattern in YTDLP_OUTPUT_RES:
+            match = pattern.match(stripped)
+            if match:
+                self.current_download_outputs.append(match.group(1))
+
         auth_info = AuthErrorDetector.detect(
             1,
             stderr_text=line,
@@ -2144,7 +2326,7 @@ class App:
                 "presque fini"
             )
 
-            self.append_log_threadsafe(line)
+            self.append_log_threadsafe(line, detail=True)
 
             self.clear_progress_log_line_marker()
             self.last_log_ui_update = now
@@ -2155,7 +2337,7 @@ class App:
                 now - self.last_log_ui_update
             ) >= LOG_UI_INTERVAL:
 
-                self.append_log_threadsafe(line)
+                self.append_log_threadsafe(line, detail=True)
 
                 self.clear_progress_log_line_marker()
                 self.last_log_ui_update = now
@@ -2176,7 +2358,9 @@ class App:
         )
 
         if folder:
+            folder = os.path.normpath(folder)
             self.folder_var.set(folder)
+            self.settings.set("download_folder", folder)
 
     def run_command_json(self, cmd):
         result = subprocess.run(
@@ -2196,17 +2380,22 @@ class App:
             cmd,
             **get_live_process_kwargs()
         )
+        self.current_process = process
 
         collected_lines = []
 
-        if process.stdout is not None:
-            for raw_line in process.stdout:
-                line = raw_line.rstrip("\n").rstrip("\r")
+        try:
+            if process.stdout is not None:
+                for raw_line in process.stdout:
+                    line = raw_line.rstrip("\n").rstrip("\r")
 
-                collected_lines.append(line)
-                self.handle_live_output_line(line)
+                    collected_lines.append(line)
+                    self.handle_live_output_line(line)
 
-        returncode = process.wait()
+            returncode = process.wait()
+
+        finally:
+            self.current_process = None
 
         output_text = "\n".join(collected_lines)
 
@@ -2307,7 +2496,7 @@ class App:
         os.rename(file_path, target_path)
 
         self.append_log_threadsafe(
-            f"Fichier renomme : {target_path}"
+            f"Fichier renommé : {target_path}"
         )
 
         return target_path
@@ -2380,21 +2569,7 @@ class App:
             "-vn",
         ] + codec_args + [output_file]
 
-        process = subprocess.Popen(
-            cmd,
-            **get_live_process_kwargs()
-        )
-
-        if process.stdout is not None:
-            for raw_line in process.stdout:
-                line = raw_line.rstrip("\n").rstrip("\r")
-
-                if line.strip():
-                    self.append_log_threadsafe(
-                        "[ffmpeg] " + line
-                    )
-
-        returncode = process.wait()
+        returncode = self.run_ffmpeg(cmd, output_file)
 
         if returncode != 0:
             raise RuntimeError(
@@ -2452,7 +2627,7 @@ class App:
 
         else:
             raise RuntimeError(
-                f"Format video non supporte : {output_format}"
+                f"Format vidéo non supporté : {output_format}"
             )
 
         cmd = [
@@ -2461,25 +2636,11 @@ class App:
             "-i", input_file,
         ] + codec_args + [output_file]
 
-        process = subprocess.Popen(
-            cmd,
-            **get_live_process_kwargs()
-        )
-
-        if process.stdout is not None:
-            for raw_line in process.stdout:
-                line = raw_line.rstrip("\n").rstrip("\r")
-
-                if line.strip():
-                    self.append_log_threadsafe(
-                        "[ffmpeg] " + line
-                    )
-
-        returncode = process.wait()
+        returncode = self.run_ffmpeg(cmd, output_file)
 
         if returncode != 0:
             raise RuntimeError(
-                f"Echec conversion {output_format}"
+                f"Échec de la conversion {output_format}"
             )
 
         return output_file
@@ -2489,13 +2650,16 @@ class App:
         selected_format,
         formats_list
     ):
+        if selected_format == "BEST_AUDIO":
+            return True
+
         for f in formats_list:
             if f["format_id"] == selected_format:
                 return f["type"] == "audio only"
 
         return False
 
-    def choose_format_flow(self, cookie_source=None):
+    def choose_format_flow(self, cookie_source=None, preset=None):
         url = self.url_var.get().strip()
         playlist_mode = self.playlist_mode_var.get()
         source = cookie_source or self.cookie_source_from_main_ui()
@@ -2519,6 +2683,7 @@ class App:
             )
             return
 
+        self.pending_preset = preset
         self.disable_action_buttons()
         self.selected_download_format = None
         self.selected_download_title = None
@@ -2569,11 +2734,15 @@ class App:
             return
 
         self.disable_action_buttons()
+        self.settings.set("download_folder", folder)
+        self.cancel_requested = False
+        self.current_download_outputs = []
+        self.cancel_btn.config(state="normal")
 
         self.reset_progress()
 
         self.set_status(
-            "Telechargement en cours..."
+            "Téléchargement en cours..."
         )
 
         threading.Thread(
@@ -2767,15 +2936,25 @@ class App:
             else "ffmpeg non détecté."
         )
 
-        dlg = FormatSelector(
-            self.root,
-            formats_list,
-            f"Vidéo : {title}\n{ffmpeg_msg}"
-        )
+        preset = PRESETS.get(self.pending_preset)
 
-        self.root.wait_window(dlg)
+        if preset:
+            # One-click shortcut: no format list to read.
+            selected = preset["format"]
+            self.audio_conversion_var.set(preset["audio_conversion"])
+            self.video_conversion_var.set(preset["video_conversion"])
+            self.append_log(f"Raccourci : {preset['label']}.")
 
-        selected = dlg.selected_format
+        else:
+            dlg = FormatSelector(
+                self.root,
+                formats_list,
+                f"Vidéo : {title}\n{ffmpeg_msg}"
+            )
+
+            self.root.wait_window(dlg)
+
+            selected = dlg.selected_format
 
         if not selected:
             self.set_status("Choix annulé.")
@@ -2797,10 +2976,14 @@ class App:
         selected_kind = self.get_selected_format_kind(selected)
         self.set_conversion_controls(selected_kind)
 
+        if preset:
+            self.start_download_flow()
+            return
+
         self.enable_start_button()
 
         self.set_status(
-            "Format choisi. Choisis le dossier puis lance le telechargement."
+            "Format choisi. Vérifie le dossier, puis clique sur « Lancer le téléchargement »."
         )
 
     def list_files_recursive(self, folder):
@@ -2876,11 +3059,10 @@ class App:
             downloader = find_downloader(self.tool_path("yt-dlp"))
             ffmpeg_path = find_ffmpeg(self.tool_path("ffmpeg"))
 
-            format_string = (
-                "bv*+ba/b"
-                if selected_format == "BEST_AUTO"
-                else selected_format
-            )
+            format_string = {
+                "BEST_AUTO": "bv*+ba/b",
+                "BEST_AUDIO": "ba/b",
+            }.get(selected_format, selected_format)
 
             before_files = self.list_files_recursive(folder)
 
@@ -2925,6 +3107,10 @@ class App:
             returncode, output_text = (
                 self.run_command_live(cmd)
             )
+
+            if self.cancel_requested:
+                self.finish_cancelled_download()
+                return
 
             after_files = self.list_files_recursive(folder)
 
@@ -2996,7 +3182,7 @@ class App:
                                 os.remove(main_file)
 
                                 self.append_log_threadsafe(
-                                    "Fichier source supprime : "
+                                    "Fichier source supprimé : "
                                     f"{main_file}"
                                 )
 
@@ -3021,11 +3207,11 @@ class App:
                     and ffmpeg_path
                 ):
                     self.set_status_threadsafe(
-                        f"Conversion video {selected_video_conversion}..."
+                        f"Conversion vidéo {selected_video_conversion}..."
                     )
 
                     self.append_log_threadsafe(
-                        f"Conversion video vers "
+                        f"Conversion vidéo vers "
                         f"{selected_video_conversion}..."
                     )
 
@@ -3039,7 +3225,7 @@ class App:
                         )
 
                         self.append_log_threadsafe(
-                            f"Conversion terminee : "
+                            f"Conversion terminée : "
                             f"{converted_file}"
                         )
 
@@ -3048,7 +3234,7 @@ class App:
                                 os.remove(main_file)
 
                                 self.append_log_threadsafe(
-                                    f"Fichier source supprime : "
+                                    f"Fichier source supprimé : "
                                     f"{main_file}"
                                 )
 
@@ -3059,12 +3245,12 @@ class App:
 
                     except Exception as e:
                         self.append_log_threadsafe(
-                            f"Erreur conversion video : {e}"
+                            f"Erreur de conversion vidéo : {e}"
                         )
 
                 elif not ffmpeg_path:
                     self.append_log_threadsafe(
-                        "Conversion video ignoree : ffmpeg non detecte."
+                        "Conversion vidéo ignorée : ffmpeg non détecté."
                     )
 
             if (
@@ -3095,7 +3281,7 @@ class App:
                         extra_history_files.append(converted_file)
 
                         self.append_log_threadsafe(
-                            f"Conversion terminee : "
+                            f"Conversion terminée : "
                             f"{converted_file}"
                         )
 
@@ -3104,7 +3290,7 @@ class App:
                                 os.remove(source_file)
 
                                 self.append_log_threadsafe(
-                                    f"Fichier source supprime : "
+                                    f"Fichier source supprimé : "
                                     f"{source_file}"
                                 )
 
@@ -3113,8 +3299,13 @@ class App:
 
                     except Exception as e:
                         self.append_log_threadsafe(
-                            f"Erreur conversion video : {e}"
+                            f"Erreur de conversion vidéo : {e}"
                         )
+
+            if self.cancel_requested:
+                # « Annuler » was used during a conversion.
+                self.finish_cancelled_download()
+                return
 
             if returncode == 0:
                 rename_conversion = "Aucune conversion"
@@ -3228,9 +3419,9 @@ class App:
         if not info:
             return False
 
-        self.set_status("Authentification necessaire.")
+        self.set_status("Authentification nécessaire.")
         self.append_log(
-            "Authentification necessaire : "
+            "Authentification nécessaire : "
             f"{info.error_type.value} ({self.authentication_source_log_label(cookie_source)})."
         )
         self.open_authentication_assistant(info)
@@ -3258,6 +3449,7 @@ class App:
         )
 
     def on_download_error(self, error_text, cookie_source=None, returncode=-1):
+        self.cancel_btn.config(state="disabled")
         self.enable_start_button()
         self.enable_choose_format_button()
 
@@ -3280,35 +3472,27 @@ class App:
 
     def on_success(self, folder, main_file):
         self.cleanup_temporary_cookie_source(self.selected_cookie_source)
+        self.cancel_btn.config(state="disabled")
         self.enable_start_button()
         self.enable_choose_format_button()
-
-        self.set_status(
-            "Téléchargement terminé."
-        )
-
-        self.append_log(
-            "Téléchargement terminé avec succès."
-        )
 
         self.clear_progress_log_line_marker()
 
         if main_file:
-            self.append_log(
-                f"Fichier principal détecté : "
-                f"{main_file}"
+            self.set_status(
+                f"Téléchargement terminé : {os.path.basename(main_file)}",
+                SUCCESS_COLOR
             )
+            self.append_log(f"Téléchargement terminé : {main_file}")
 
         else:
+            self.set_status("Téléchargement terminé.", SUCCESS_COLOR)
             self.append_log(
-                "Impossible de détecter "
+                "Téléchargement terminé. Impossible de détecter "
                 "automatiquement le fichier principal."
             )
 
-        messagebox.showinfo(
-            "Succès",
-            "Téléchargement terminé."
-        )
+        self.show_result(main_file, folder)
 
         if (
             main_file
@@ -3330,10 +3514,6 @@ class App:
                 args=(main_file, folder),
                 daemon=True
             ).start()
-
-            return
-
-        open_folder(folder)
 
     def hash_worker(self, main_file, folder):
         try:
@@ -3407,15 +3587,12 @@ class App:
             f"{hash_txt_path}"
         )
 
-        messagebox.showinfo(
-            "SHA-256 terminé",
-            "Le hash SHA-256 a été calculé.\n\n"
-            f"SHA-256 :\n{digest}\n\n"
-            f"Enregistré dans :\n"
-            f"{hash_txt_path}"
+        self.set_status(
+            "Téléchargement terminé, SHA-256 enregistré : "
+            f"{os.path.basename(hash_txt_path)}",
+            SUCCESS_COLOR
         )
-
-        open_folder(folder)
+        self.show_result(main_file, folder)
 
     def on_hash_error(self, folder, error_text):
         self.enable_start_button()
@@ -3433,7 +3610,132 @@ class App:
             f"le SHA-256.\n\n{error_text}"
         )
 
-        open_folder(folder)
+    def start_preset(self, kind):
+        folder = self.folder_var.get().strip()
+
+        if not os.path.isdir(folder):
+            messagebox.showerror(
+                "Erreur",
+                "Choisis un dossier de sauvegarde qui existe."
+            )
+            return
+
+        self.choose_format_flow(preset=kind)
+
+    def on_url_return(self, event):
+        if str(self.video_preset_btn["state"]) == "normal":
+            self.start_preset("video")
+        return "break"
+
+    def auto_paste_clipboard(self, event=None):
+        # A link copied in the browser is ready when the window comes back.
+        if self.url_var.get().strip():
+            return
+
+        try:
+            text = self.root.clipboard_get().strip()
+        except tk.TclError:
+            return
+
+        if text == self.last_auto_pasted or not CLIPBOARD_URL_RE.fullmatch(text):
+            return
+
+        self.last_auto_pasted = text
+        self.url_var.set(text)
+        self.append_log("Lien collé depuis le presse-papiers.")
+
+    def initial_download_folder(self):
+        saved = self.settings.get("download_folder")
+        if isinstance(saved, str) and os.path.isdir(saved):
+            return saved
+        return find_windows_downloads_folder() or ""
+
+    def run_ffmpeg(self, cmd, output_file):
+        # Tracked like the download: « Annuler » also stops a conversion and
+        # removes its unfinished file.
+        self.current_download_outputs.append(output_file)
+        process = subprocess.Popen(
+            cmd,
+            **get_live_process_kwargs()
+        )
+        self.current_process = process
+
+        try:
+            if process.stdout is not None:
+                for raw_line in process.stdout:
+                    line = raw_line.rstrip("\n").rstrip("\r")
+
+                    if line.strip():
+                        self.append_log_threadsafe(
+                            "[ffmpeg] " + line,
+                            detail=True
+                        )
+
+            return process.wait()
+
+        finally:
+            self.current_process = None
+
+    def cancel_download(self):
+        self.cancel_requested = True
+        self.cancel_btn.config(state="disabled")
+        self.set_status("Annulation en cours...")
+
+        process = self.current_process
+        if process is not None:
+            kill_process_tree(process)
+
+    def finish_cancelled_download(self):
+        # Worker thread: only files written by this download are removed.
+        self.remove_partial_outputs()
+        self.root.after(0, self.on_download_cancelled)
+
+    def remove_partial_outputs(self):
+        for path in dict.fromkeys(self.current_download_outputs):
+            for candidate in (path, path + ".part", path + ".ytdl"):
+                if not os.path.isfile(candidate):
+                    continue
+                try:
+                    os.remove(candidate)
+                except OSError:
+                    continue
+                self.append_log_threadsafe(
+                    f"Fichier incomplet supprimé : {candidate}",
+                    detail=True
+                )
+
+    def on_download_cancelled(self):
+        self.cleanup_temporary_cookie_source(self.selected_cookie_source)
+        self.cancel_btn.config(state="disabled")
+        self.enable_start_button()
+        self.enable_choose_format_button()
+        self.reset_progress()
+        self.clear_progress_log_line_marker()
+        self.set_status("Téléchargement annulé.", CANCEL_COLOR)
+        self.append_log("Téléchargement annulé.")
+
+    def show_result(self, main_file, folder):
+        self.last_result_file = (
+            main_file
+            if main_file and os.path.isfile(main_file)
+            else None
+        )
+        self.last_result_folder = folder
+        self.open_result_file_btn.config(
+            state="normal" if self.last_result_file else "disabled"
+        )
+        self.result_frame.pack(side="right", before=self.status_label)
+
+    def hide_result(self):
+        self.result_frame.pack_forget()
+
+    def open_result_file(self):
+        if self.last_result_file:
+            open_path(self.last_result_file)
+
+    def open_result_folder(self):
+        if self.last_result_folder:
+            open_path(self.last_result_folder)
 
     def mainloop(self):
         self.root.mainloop()

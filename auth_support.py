@@ -246,9 +246,14 @@ def find_chrome_download_folder(
             if isinstance(folder, str) and folder and os.path.isdir(folder):
                 return folder
 
-    # Chrome omits default_directory when it uses the Windows Downloads known
-    # folder. Resolve the known-folder registry value first, including a folder
-    # redirected by OneDrive; then use the conventional path as a fallback.
+    # Chrome omits default_directory when it uses the Windows Downloads folder.
+    return find_windows_downloads_folder()
+
+
+def find_windows_downloads_folder() -> Optional[str]:
+    """Windows Downloads known folder, including a folder redirected by OneDrive."""
+    # Resolve the known-folder registry value first, then use the
+    # conventional path as a fallback.
     try:
         import winreg  # Windows-only application
 
@@ -336,7 +341,7 @@ def create_youtube_only_cookie_copy(source_path: str) -> tuple[str, int]:
     if not selected_lines:
         raise ValueError(
             "Le fichier ne contient aucun cookie pour youtube.com. "
-            "Exportez les cookies du site YouTube, puis réessayez."
+            "Exporte les cookies du site YouTube, puis réessaie."
         )
 
     handle, temporary_path = tempfile.mkstemp(

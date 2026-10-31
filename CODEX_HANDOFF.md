@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.84.pyw
-  current_app_label: "Téléchargeur Vidéo V7.3 by Clemzy"
-  next_source_version: "1.85"
+  current_source: telechargeur_youtube_v1.85.pyw
+  current_app_label: "Téléchargeur Vidéo v1.85 by Clemzy (APP_VERSION follows the source number)"
+  next_source_version: "1.86"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -38,14 +38,16 @@ REPO_STATE:
     - telechargeur_youtube_v1.82.pyw: mise à jour automatique de yt-dlp, icône GitHub, build portable
     - telechargeur_youtube_v1.83.pyw: messages d'erreur des workers qui ne bloquent plus l'interface
     - telechargeur_youtube_v1.84.pyw: exe léger Nuitka, outils téléchargés au premier lancement
+    - telechargeur_youtube_v1.85.pyw: ergonomie (raccourcis MP4/MP3, Annuler, dossier retenu, journal)
   files_expected:
-    - telechargeur_youtube_v1.84.pyw
+    - telechargeur_youtube_v1.85.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
     - test_tools_manager.py
     - test_app_tools_ui.py
     - test_build_exe.py
+    - test_app_ergonomics.py
     - build_exe.py
     - social_github.png
     - yt-dlp.exe
@@ -222,6 +224,26 @@ VERSION_1_84_CHANGE:
     place (two windows never collide); superseded copies are removed at the next launch only, since
     a running download may still use them; a failed update is retried at the next launch.
   - Tests: py -3.13 -m unittest test_tools_manager test_app_tools_ui test_auth_support test_build_exe
+
+VERSION_1_85_CHANGE:
+  - Texts: accents fixed, informal address (tu) everywhere including the authentication assistant;
+    APP_VERSION constant shown in the title (a test checks it matches the source file name).
+  - Cookies row: « Aide à l'authentification » was clipped at 650 px; the hint moved to its own line.
+  - One-click shortcuts « Vidéo MP4 » (BEST_AUTO) and « Audio MP3 » (BEST_AUDIO = ba/b + MP3
+    conversion): the format list is read silently, no dialog; « Format avancé... » keeps the old
+    flow. Enter in the URL field starts « Vidéo MP4 »; a link in the clipboard is pasted once when
+    the window is activated and the URL field is empty.
+  - Download folder prefilled with the Windows Downloads folder
+    (auth_support.find_windows_downloads_folder), remembered in
+    %LOCALAPPDATA%\StreamDL\settings.json.
+  - « Annuler »: taskkill /T on the yt-dlp (or ffmpeg) process tree, then removal of only the files
+    yt-dlp reported ([download] Destination, [Merger]) and the conversion output. Closing the
+    window also stops a running download.
+  - End of download: no dialog and no Explorer window; green status line with « Ouvrir le fichier »
+    and « Ouvrir le dossier ». The SHA-256 result is also shown without a dialog (errors keep one).
+  - Journal: raw yt-dlp/ffmpeg lines tagged "detail" (Tk elide), shown with « Afficher les détails
+    techniques ». History reduced to 3 rows and spacing tightened so the journal keeps ~4 lines.
+  - Tests: test_app_ergonomics.py (18 tests, hidden window; the cancel test runs a fake yt-dlp).
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc
