@@ -8,9 +8,9 @@ META:
   github_visibility: private
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\Utilisateur\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.87.pyw
-  current_app_label: "Téléchargeur Vidéo v1.87 by Clemzy (APP_VERSION follows the source number)"
-  next_source_version: "1.88"
+  current_source: telechargeur_youtube_v1.88.pyw
+  current_app_label: "Téléchargeur Vidéo v1.88 by Clemzy (APP_VERSION follows the source number)"
+  next_source_version: "1.89"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -41,8 +41,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.85.pyw: ergonomie (raccourcis MP4/MP3, Annuler, dossier retenu, journal)
     - telechargeur_youtube_v1.86.pyw: présentation Windows 11 (sv-ttk clair/sombre, blocs, aperçu)
     - telechargeur_youtube_v1.87.pyw: thème imposé par le nom de l'exe (copies de test)
+    - telechargeur_youtube_v1.88.pyw: clair par défaut, fenêtre affichée une seule fois
   files_expected:
-    - telechargeur_youtube_v1.87.pyw
+    - telechargeur_youtube_v1.88.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
@@ -272,6 +273,18 @@ VERSION_1_87_CHANGE:
     The copies are identical files, so they share one Nuitka cache folder (no re-unpacking
     when switching). get_launcher_path() gives the started exe; get_app_dir() uses it.
   - To make the test copies: build once, then copy dist\StreamDL.exe to the three names.
+
+VERSION_1_88_CHANGE:
+  - Light theme by default (DEFAULT_THEME, chosen by the user). StreamDL-sombre.exe, -natif.exe and
+    -auto.exe (follows Windows) still select another look.
+  - Filming the opening showed an empty 486x538 window for ~0.45 s before the real one, and a light
+    title bar over the dark theme: use_dark_title_bar() called update_idletasks() before build_ui,
+    which mapped the root early; Tk then recreated the frame window (icon, size), losing the dark
+    title bar. App.__init__ now withdraws the root, builds everything, then deiconifies it once
+    (only if it was not withdrawn by the caller, so the tests stay hidden). The dark title bar is set
+    on <Map> (follow_theme_title_bar) with SetWindowPos(SWP_FRAMECHANGED) to repaint the frame.
+  - Tests: Tk roots must not be freed outside the main thread (Tcl_AsyncDelete abort): the test
+    cleanup joins worker threads and runs gc.collect(); avoid closures stored on a root.
 
 RECENT_TEST_VIDEO:
   url: https://www.youtube.com/watch?v=55q-1jpgnGc

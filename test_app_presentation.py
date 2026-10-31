@@ -3,13 +3,15 @@
 Run: py -3.13 -m unittest -v test_app_presentation.py
 """
 import json
+import tkinter as tk
 import unittest
 from tkinter import ttk
 from unittest import mock
 
 import build_exe
 from test_app_ergonomics import ErgonomicsTestCase
-from test_app_tools_ui import APP
+from test_app_tools_ui import APP, add_managed_copy
+from tools_manager import DENO, FFMPEG, YTDLP, record_check
 
 VIDEO_INFO = {
     "title": "Me at the zoo",
@@ -27,7 +29,8 @@ def block_of(widget):
 
 class ThemeTests(ErgonomicsTestCase):
     def start_with_windows_theme(self, dark):
-        with mock.patch.object(APP, "windows_prefers_dark", return_value=dark):
+        # "-auto" copies follow the Windows setting.
+        with mock.patch.object(APP, "windows_prefers_dark", return_value=dark),                 mock.patch.object(APP, "get_launcher_path", return_value="C:/Apps/StreamDL-auto.exe"):
             self.start_ready_app()
 
     def assert_backgrounds_follow_theme(self, color):
@@ -68,8 +71,9 @@ class ThemeByExeNameTests(ErgonomicsTestCase):
             ("StreamDL-sombre.exe", "dark"),
             ("StreamDL-natif.exe", "native"),
             ("STREAMDL-SOMBRE.EXE", "dark"),
-            ("StreamDL.exe", "auto"),
-            ("telechargeur_youtube_v1.87.pyw", "auto"),
+            ("StreamDL-auto.exe", "auto"),
+            ("StreamDL.exe", "light"),
+            ("telechargeur_youtube_v1.88.pyw", "light"),
         ):
             with mock.patch.object(APP, "get_launcher_path", return_value=f"C:/Apps/{name}"):
                 self.assertEqual(APP.requested_theme(), expected, name)
@@ -79,6 +83,9 @@ class ThemeByExeNameTests(ErgonomicsTestCase):
                 mock.patch.object(APP, "windows_prefers_dark", return_value=windows_dark):
             self.start_ready_app()
         return ttk.Style(self.root).theme_use()
+
+    def test_default_exe_opens_light_even_on_a_dark_windows(self):
+        self.assertEqual(self.start_as("StreamDL.exe", windows_dark=True), "sun-valley-light")
 
     def test_dark_copy_ignores_a_light_windows(self):
         self.assertEqual(self.start_as("StreamDL-sombre.exe", windows_dark=False), "sun-valley-dark")
@@ -90,6 +97,52 @@ class ThemeByExeNameTests(ErgonomicsTestCase):
         theme = self.start_as("StreamDL-natif.exe", windows_dark=True)
         self.assertFalse(theme.startswith("sun-valley"))
         self.assertEqual(str(self.app.log_box["background"]), APP.PALETTES["light"]["text_bg"])
+
+
+class WindowDisplayTests(ErgonomicsTestCase):
+    def open_visible_window(self, exe_name):
+        if not (self.storage / "yt-dlp").exists():
+            for spec, version in ((YTDLP, "2026.10.26"), (DENO, "2.9.8"), (FFMPEG, "2026.10.30.1913")):
+                add_managed_copy(self.storage, spec, version)
+                record_check(spec, self.storage)
+        root = tk.Tk()
+        root.attributes("-alpha", 0.0)  # invisible while the test runs
+        sizes, states = [], []
+        set_geometry = root.geometry
+
+        def geometry(*args):
+            sizes.extend(args)
+            return set_geometry(*args)
+
+        def deiconify():
+            states.append((root.winfo_ismapped(), list(sizes), len(root.winfo_children())))
+
+        root.geometry = geometry
+        root.deiconify = deiconify
+        # These closures refer to the window: remove them so no cycle keeps it.
+        self.addCleanup(root.__dict__.pop, "geometry", None)
+        self.addCleanup(root.__dict__.pop, "deiconify", None)
+        with mock.patch.object(APP, "get_launcher_path", return_value=f"C:/Apps/{exe_name}"):
+            app = APP.App(root)
+        self.addCleanup(self.close_quietly, app)
+        return root, states
+
+    def test_window_is_shown_once_complete(self):
+        root, states = self.open_visible_window("StreamDL.exe")
+        # Shown a single time, never before: no empty window of the default size.
+        self.assertEqual(len(states), 1)
+        mapped, sizes, children = states[0]
+        self.assertEqual(mapped, 0)
+        self.assertIn(APP.WINDOW_SIZE, sizes)
+        self.assertGreater(children, 5)
+
+    def test_dark_title_bar_is_set_once_the_window_is_shown(self):
+        root, _ = self.open_visible_window("StreamDL-sombre.exe")
+        self.assertNotEqual(root.bind("<Map>"), "")
+
+    def test_light_title_bar_needs_nothing(self):
+        root, _ = self.open_visible_window("StreamDL.exe")
+        self.assertEqual(root.bind("<Map>"), "")
 
 
 class BlockTests(ErgonomicsTestCase):
@@ -128,15 +181,14 @@ class BottomTabsTests(ErgonomicsTestCase):
 
 class ThemedIconTests(ErgonomicsTestCase):
     def test_github_icon_is_light_on_the_dark_theme(self):
-        with mock.patch.object(APP, "windows_prefers_dark", return_value=True):
+        with mock.patch.object(APP, "get_launcher_path", return_value="C:/Apps/StreamDL-sombre.exe"):
             self.start_ready_app()
         self.assertTrue(APP.themed_asset("social_github.png").endswith("social_github_dark.png"))
         # Icons without a dark variant are used as they are.
         self.assertTrue(APP.themed_asset("social_youtube.png").endswith("social_youtube.png"))
 
     def test_regular_icon_on_the_light_theme(self):
-        with mock.patch.object(APP, "windows_prefers_dark", return_value=False):
-            self.start_ready_app()
+        self.start_ready_app()
         self.assertTrue(APP.themed_asset("social_github.png").endswith("social_github.png"))
 
 

@@ -2,6 +2,7 @@
 
 Run: py -3.13 -m unittest -v test_app_tools_ui.py
 """
+import gc
 import glob
 import importlib.machinery
 import importlib.util
@@ -125,6 +126,14 @@ class AppToolsTestCase(unittest.TestCase):
             app.on_application_close()
         except tk.TclError:
             pass  # already closed by the test
+        # A worker thread must not hold the last reference to the window:
+        # Tcl aborts if its interpreter is deleted outside the main thread.
+        for thread in threading.enumerate():
+            if thread is not threading.main_thread():
+                thread.join(timeout=10)
+        # Same for a window kept alive by a reference cycle: collect it now,
+        # in the main thread, rather than whenever another thread allocates.
+        gc.collect()
 
     def pump_until(self, condition, timeout=10.0):
         # A real mainloop is required for root.after() calls made from threads.

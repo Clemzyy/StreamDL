@@ -61,7 +61,7 @@ from tools_manager import (
 # through PATH; child processes such as yt-dlp inherit this setting.
 os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
-APP_VERSION = "1.87"
+APP_VERSION = "1.88"
 APP_TITLE = f"Téléchargeur Vidéo v{APP_VERSION} by Clemzy"
 WINDOW_SIZE = "650x780"
 
@@ -265,12 +265,14 @@ def get_app_dir():
     return os.path.dirname(get_launcher_path())
 
 
-# Copies of the exe named StreamDL-clair.exe, StreamDL-sombre.exe or
-# StreamDL-natif.exe force a theme; any other name follows Windows.
+# The light theme is the default. Copies of the exe named StreamDL-sombre.exe,
+# StreamDL-natif.exe or StreamDL-auto.exe (follows Windows) use another one.
+DEFAULT_THEME = "light"
 THEME_BY_EXE_SUFFIX = {
     "-clair": "light",
     "-sombre": "dark",
     "-natif": "native",
+    "-auto": "auto",
 }
 
 
@@ -279,7 +281,7 @@ def requested_theme():
     for suffix, theme in THEME_BY_EXE_SUFFIX.items():
         if name.endswith(suffix):
             return theme
-    return "auto"
+    return DEFAULT_THEME
 
 
 def get_local_tool_dirs():
@@ -412,7 +414,6 @@ def use_dark_title_bar(window, dark):
     if not sys.platform.startswith("win"):
         return
     try:
-        window.update_idletasks()
         hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
         value = ctypes.c_int(1 if dark else 0)
         # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 on Windows 11, 19 on older Windows 10.
@@ -424,8 +425,24 @@ def use_dark_title_bar(window, dark):
                 ctypes.sizeof(value)
             ) == 0:
                 break
+        # Repaint the frame now rather than at the next activation.
+        # SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+        ctypes.windll.user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x37)
     except (AttributeError, OSError):
         pass
+
+
+def follow_theme_title_bar(window):
+    # Tk recreates the frame window Windows draws while it sets the window
+    # up: the title bar is made dark each time the window is shown.
+    if palette["mode"] != "dark":
+        return
+
+    def on_map(event):
+        if event.widget is window:
+            use_dark_title_bar(window, True)
+
+    window.bind("<Map>", on_map, add="+")
 
 
 def apply_theme(root, requested="auto"):
@@ -452,7 +469,6 @@ def apply_theme(root, requested="auto"):
             root.tk.call("configure_colors")
         except tk.TclError:
             pass
-        use_dark_title_bar(root, mode == "dark")
 
     return mode
 
@@ -664,7 +680,7 @@ def get_live_process_kwargs():
 class FormatSelector(tk.Toplevel):
     def __init__(self, parent, formats_list, title_text):
         super().__init__(parent)
-        use_dark_title_bar(self, palette["mode"] == "dark")
+        follow_theme_title_bar(self)
 
         self.title("Choisir un format")
         self.geometry("1220x560")
@@ -831,7 +847,7 @@ class AuthenticationAssistant(tk.Toplevel):
 
     def __init__(self, parent, error_info, firefox_path, remembered_cookie_path, callbacks):
         super().__init__(parent)
-        use_dark_title_bar(self, palette["mode"] == "dark")
+        follow_theme_title_bar(self)
         self.error_info = error_info
         self.firefox_path = firefox_path
         self.remembered_cookie_path = remembered_cookie_path
@@ -1077,9 +1093,14 @@ class AuthenticationAssistant(tk.Toplevel):
 class App:
     def __init__(self, root):
         self.root = root
+        # Built hidden and shown once complete: otherwise an empty window of
+        # the default size shows first, then is rebuilt at its real size.
+        show_when_ready = self.root.state() != "withdrawn"
+        self.root.withdraw()
 
         self.root.title(APP_TITLE)
         apply_theme(self.root, requested_theme())
+        follow_theme_title_bar(self.root)
         apply_app_icon(self.root)
         self.root.geometry(WINDOW_SIZE)
         self.root.resizable(True, True)
@@ -1154,6 +1175,10 @@ class App:
         self.render_tools_status()
         self.enable_choose_format_button()
         self.root.bind("<Activate>", self.auto_paste_clipboard, add="+")
+
+        if show_when_ready:
+            self.root.deiconify()
+
         # Started once the window is drawn, so it never delays the first paint.
         self.tools_worker_after_id = self.root.after(
             300,
