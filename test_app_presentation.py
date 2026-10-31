@@ -347,7 +347,12 @@ class ThemedIconTests(ErgonomicsTestCase):
                     rgba = original.convert("RGBA")
                     disc = [(x, y) for y in range(rgba.height) for x in range(rgba.width)
                             if rgba.getpixel((x, y)) == (255, 255, 255, 51)]
-                self.assertTrue(disc)
+                if icon_name == "social_paypal.png":
+                    # Regenerated from the vector mark, with no disc even
+                    # in the original/light asset.
+                    self.assertEqual(disc, [])
+                else:
+                    self.assertTrue(disc)
                 image = self.image_of(icon_name)
                 self.assertTrue(all(
                     self.root.tk.getboolean(self.root.tk.call(image, "transparency", "get", x, y))
@@ -429,6 +434,45 @@ class ThemeSwitchTests(ErgonomicsTestCase):
             self.app.show_window_menu(event)
         popup.assert_called_once_with(3, 4)
         self.assertTrue(self.root.bind("<Button-3>"))
+
+
+class ContextMenuColorsTests(ErgonomicsTestCase):
+    def test_edit_menu_uses_light_text_on_the_dark_theme(self):
+        self.start_ready_app()
+        self.app.switch_theme("dark")
+        menu = APP.build_edit_menu(self.app.url_entry, self.app.theme_menu_items())
+        self.addCleanup(menu.destroy)
+        self.assertEqual(str(menu.cget("foreground")), "#f3f3f3")
+        self.assertEqual(str(menu.cget("activeforeground")), "#f3f3f3")
+        self.assertEqual(str(menu.cget("background")), "#2b2b2b")
+        self.assertNotEqual(str(menu.cget("disabledforeground")), str(menu.cget("foreground")))
+
+    def test_window_menu_and_edit_menu_share_the_theme_colors(self):
+        self.start_ready_app()
+        self.app.switch_theme("dark")
+        menus = []
+        make_menu = APP.make_context_menu
+
+        def capture(parent):
+            menu = make_menu(parent)
+            menus.append(menu)
+            return menu
+
+        with mock.patch.object(APP, "make_context_menu", side_effect=capture), \
+                mock.patch.object(APP.tk.Menu, "tk_popup"):
+            self.app.show_window_menu(mock.Mock(widget=self.app.history_tree, x_root=3, y_root=4))
+        self.addCleanup(menus[0].destroy)
+        self.assertEqual(str(menus[0].cget("foreground")), "#f3f3f3")
+
+    def test_new_menu_returns_to_dark_text_on_the_light_theme(self):
+        self.start_ready_app()
+        self.app.switch_theme("dark")
+        self.app.switch_theme("light")
+        menu = APP.make_context_menu(self.root)
+        self.addCleanup(menu.destroy)
+        self.assertEqual(str(menu.cget("foreground")), "#1c1c1c")
+        self.assertEqual(str(menu.cget("activeforeground")), "#1c1c1c")
+        self.assertEqual(str(menu.cget("background")), "#ffffff")
 
 
 class ConversionOptionsTests(ErgonomicsTestCase):
@@ -545,6 +589,9 @@ class DarkIconTests(unittest.TestCase):
                 # background. Where only that disc shows, the dark one is clear.
                 disc = [index for index, pixel in enumerate(self.pixels(icon))
                         if pixel == (255, 255, 255, 51)]
+                if icon == "social_paypal.png":
+                    self.assertEqual(disc, [])
+                    continue
                 self.assertGreater(len(disc), 50)
                 dark_pixels = self.pixels(dark)
                 self.assertEqual({dark_pixels[index][3] for index in disc}, {0})
@@ -552,6 +599,15 @@ class DarkIconTests(unittest.TestCase):
     def test_github_is_white_on_the_dark_theme(self):
         colors = {p[:3] for p in self.pixels("social_github_dark.png") if p[3] > 0}
         self.assertEqual(colors, {(255, 255, 255)})
+
+    def test_paypal_has_clean_blue_edges_on_a_transparent_background(self):
+        light = self.pixels("social_paypal.png")
+        self.assertEqual(light, self.pixels("social_paypal_dark.png"))
+        self.assertEqual(light[0][3], 0)
+        edge = [pixel for pixel in light if 0 < pixel[3] < 255]
+        self.assertTrue(edge)
+        self.assertTrue(all(b >= g and b > r for r, g, b, a in edge))
+        self.assertFalse(any(min(pixel[:3]) > 180 for pixel in edge))
 
 
 class FormatDialogTests(ErgonomicsTestCase):

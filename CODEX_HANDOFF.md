@@ -8,9 +8,9 @@ META:
   github_visibility: public
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\user\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.93.pyw
-  current_app_label: "StreamDL v1.93 (window title; APP_VERSION follows the source number)"
-  next_source_version: "1.94"
+  current_source: telechargeur_youtube_v1.94.pyw
+  current_app_label: "StreamDL v1.94 (window title; APP_VERSION follows the source number)"
+  next_source_version: "1.95"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -24,7 +24,7 @@ USER_PREFERENCES:
 
 REPO_STATE:
   verified_remote_before_1_92: "a4a2539 Read the link on paste and size HLS videos right"
-  current_release: "1.93; consulter git log pour l'identifiant du commit de publication"
+  current_release: "1.94; consulter git log pour l'identifiant du commit de publication"
   branch: main
   remote: https://github.com/Clemzyy/StreamDL.git
   source_history:
@@ -49,8 +49,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.91.pyw: lien analysé dès le collage, taille des vidéos HLS, icônes du mode sombre
     - telechargeur_youtube_v1.92.pyw: résultats yt-dlp explicites, playlists audio converties intégralement et erreurs de conversion signalées
     - telechargeur_youtube_v1.93.pyw: icônes préchargées pour les deux thèmes, remplacement explicite de l'image ttk et logos sans disque clair dans les deux modes
+    - telechargeur_youtube_v1.94.pyw: icône PayPal régénérée depuis le SVG officiel et menus contextuels avec texte clair en mode sombre
   files_expected:
-    - telechargeur_youtube_v1.93.pyw
+    - telechargeur_youtube_v1.94.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
@@ -420,6 +421,21 @@ VERSION_1_93_CHANGE:
     light/dark/light and dark/light/dark startup sequences: GitHub changes
     black/white correctly and the other logos have no grey discs. Both test
     sessions exited normally. Full suite: 193 passing tests; Ruff and Mypy clean.
+
+VERSION_1_94_CHANGE:
+  - The PayPal PNGs are rendered directly from the official full-color SVG,
+    kept at assets/paypal-mark-color.svg with its source and Inkscape command
+    in assets/README.md. Both 32x32 RGBA variants are identical. Antialiased
+    edges contain blue color and alpha, with no white matte or circular disc.
+  - make_context_menu() supplies explicit normal, selected and disabled colors
+    to both text-field edit menus and the main-window theme menu. Enabled text
+    is #f3f3f3 on the dark theme; newly opened light menus use #1c1c1c.
+  - Regression tests cover the PayPal alpha/color edges and both context-menu
+    entry points, including switching back to the light theme.
+  - Validation: 197 tests pass; Ruff and Mypy clean. The light Nuitka EXE was
+    visually checked for the PayPal mark on dark and light backgrounds, and
+    light text in both the main-window menu and the text-field edit menu on
+    the dark theme. The isolated UI session exited normally.
 
 KNOWN_LIMITS:
   - HLS sizes remain estimates; source peak bitrates do not provide an exact file size.

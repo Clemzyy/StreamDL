@@ -65,7 +65,7 @@ from tools_manager import (
 # through PATH; child processes such as yt-dlp inherit this setting.
 os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
-APP_VERSION = "1.93"
+APP_VERSION = "1.94"
 APP_TITLE = f"StreamDL v{APP_VERSION}"
 WINDOW_SIZE = "650x780"
 
@@ -987,6 +987,21 @@ def select_all_text(widget):
     widget.focus_set()
 
 
+def make_context_menu(parent):
+    """Explicit menu colors: Windows/Tk defaults may leave dark text grey."""
+    return tk.Menu(
+        parent,
+        tearoff=0,
+        background=palette["text_bg"],
+        foreground=palette["text_fg"],
+        activebackground="#414141" if palette["mode"] == "dark" else "#e9e9e9",
+        activeforeground=palette["text_fg"],
+        disabledforeground=palette["muted"],
+        font=("Segoe UI", 10),
+        activeborderwidth=0,
+    )
+
+
 def build_edit_menu(widget, extra_items=()):
     editable = text_widget_editable(widget)
     selected = bool(text_widget_selection(widget))
@@ -998,7 +1013,7 @@ def build_edit_menu(widget, extra_items=()):
     def state(enabled):
         return "normal" if enabled else "disabled"
 
-    menu = tk.Menu(widget, tearoff=0)
+    menu = make_context_menu(widget)
     menu.add_command(label="Couper", state=state(editable and selected),
                      command=lambda: copy_selection(widget, cut=True))
     menu.add_command(label="Copier", state=state(selected),
@@ -2825,7 +2840,7 @@ class App:
         if not items:
             return
 
-        menu = tk.Menu(self.root, tearoff=0)
+        menu = make_context_menu(self.root)
 
         for label, command in items:
             menu.add_command(label=label, command=command)
