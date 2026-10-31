@@ -442,10 +442,13 @@ class ContextMenuColorsTests(ErgonomicsTestCase):
         self.app.switch_theme("dark")
         menu = APP.build_edit_menu(self.app.url_entry, self.app.theme_menu_items())
         self.addCleanup(menu.destroy)
-        self.assertEqual(str(menu.cget("foreground")), "#f3f3f3")
-        self.assertEqual(str(menu.cget("activeforeground")), "#f3f3f3")
+        self.assertEqual(str(menu.cget("foreground")), "#ffffff")
+        self.assertEqual(str(menu.cget("activeforeground")), "#ffffff")
         self.assertEqual(str(menu.cget("background")), "#2b2b2b")
         self.assertNotEqual(str(menu.cget("disabledforeground")), str(menu.cget("foreground")))
+        from tkinter import font
+
+        self.assertEqual(font.Font(root=self.root, font=menu.cget("font")).actual("weight"), "bold")
 
     def test_window_menu_and_edit_menu_share_the_theme_colors(self):
         self.start_ready_app()
@@ -462,7 +465,7 @@ class ContextMenuColorsTests(ErgonomicsTestCase):
                 mock.patch.object(APP.tk.Menu, "tk_popup"):
             self.app.show_window_menu(mock.Mock(widget=self.app.history_tree, x_root=3, y_root=4))
         self.addCleanup(menus[0].destroy)
-        self.assertEqual(str(menus[0].cget("foreground")), "#f3f3f3")
+        self.assertEqual(str(menus[0].cget("foreground")), "#ffffff")
 
     def test_new_menu_returns_to_dark_text_on_the_light_theme(self):
         self.start_ready_app()
@@ -473,6 +476,9 @@ class ContextMenuColorsTests(ErgonomicsTestCase):
         self.assertEqual(str(menu.cget("foreground")), "#1c1c1c")
         self.assertEqual(str(menu.cget("activeforeground")), "#1c1c1c")
         self.assertEqual(str(menu.cget("background")), "#ffffff")
+        from tkinter import font
+
+        self.assertEqual(font.Font(root=self.root, font=menu.cget("font")).actual("weight"), "normal")
 
 
 class ConversionOptionsTests(ErgonomicsTestCase):

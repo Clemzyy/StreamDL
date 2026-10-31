@@ -8,9 +8,9 @@ META:
   github_visibility: public
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\user\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.94.pyw
-  current_app_label: "StreamDL v1.94 (window title; APP_VERSION follows the source number)"
-  next_source_version: "1.95"
+  current_source: telechargeur_youtube_v1.95.pyw
+  current_app_label: "StreamDL v1.95 (window title; APP_VERSION follows the source number)"
+  next_source_version: "1.96"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -24,7 +24,7 @@ USER_PREFERENCES:
 
 REPO_STATE:
   verified_remote_before_1_92: "a4a2539 Read the link on paste and size HLS videos right"
-  current_release: "1.94; consulter git log pour l'identifiant du commit de publication"
+  current_release: "1.95; consulter git log pour l'identifiant du commit de publication"
   branch: main
   remote: https://github.com/Clemzyy/StreamDL.git
   source_history:
@@ -50,8 +50,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.92.pyw: résultats yt-dlp explicites, playlists audio converties intégralement et erreurs de conversion signalées
     - telechargeur_youtube_v1.93.pyw: icônes préchargées pour les deux thèmes, remplacement explicite de l'image ttk et logos sans disque clair dans les deux modes
     - telechargeur_youtube_v1.94.pyw: icône PayPal régénérée depuis le SVG officiel et menus contextuels avec texte clair en mode sombre
+    - telechargeur_youtube_v1.95.pyw: texte des menus sombres en blanc pur et gras, après comparaison du rendu réel avec la capture utilisateur
   files_expected:
-    - telechargeur_youtube_v1.94.pyw
+    - telechargeur_youtube_v1.95.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
@@ -436,6 +437,20 @@ VERSION_1_94_CHANGE:
     visually checked for the PayPal mark on dark and light backgrounds, and
     light text in both the main-window menu and the text-field edit menu on
     the dark theme. The isolated UI session exited normally.
+
+VERSION_1_95_CHANGE:
+  - The user still perceived v1.94 menu lettering as grey. A visual comparison
+    confirmed that pure white (#ffffff) with Segoe UI 10 bold gives stronger
+    visible contrast than the previous off-white normal lettering.
+  - Both dark context menus now use that white/strong font for normal and
+    highlighted commands. Light menus retain dark text and normal font weight.
+    Unavailable actions retain their disabled color.
+  - Tests inspect the resolved font weight as well as normal/active text colors;
+    a color option alone must not be presented as proof of the displayed result.
+  - Validation: 61 presentation/version/text tests pass; Ruff and Mypy clean;
+    light Nuitka build succeeds. Both compiled dark menus were visually checked,
+    including Cut and Copy enabled by selecting the isolated destination field.
+    The test session exited normally.
 
 KNOWN_LIMITS:
   - HLS sizes remain estimates; source peak bitrates do not provide an exact file size.

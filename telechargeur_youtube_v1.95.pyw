@@ -65,7 +65,7 @@ from tools_manager import (
 # through PATH; child processes such as yt-dlp inherit this setting.
 os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
-APP_VERSION = "1.94"
+APP_VERSION = "1.95"
 APP_TITLE = f"StreamDL v{APP_VERSION}"
 WINDOW_SIZE = "650x780"
 
@@ -988,16 +988,18 @@ def select_all_text(widget):
 
 
 def make_context_menu(parent):
-    """Explicit menu colors: Windows/Tk defaults may leave dark text grey."""
+    """Strong white menu lettering on dark backgrounds, including hover."""
+    dark = palette["mode"] == "dark"
+    foreground = "#ffffff" if dark else palette["text_fg"]
     return tk.Menu(
         parent,
         tearoff=0,
         background=palette["text_bg"],
-        foreground=palette["text_fg"],
+        foreground=foreground,
         activebackground="#414141" if palette["mode"] == "dark" else "#e9e9e9",
-        activeforeground=palette["text_fg"],
+        activeforeground=foreground,
         disabledforeground=palette["muted"],
-        font=("Segoe UI", 10),
+        font=("Segoe UI", 10, "bold" if dark else "normal"),
         activeborderwidth=0,
     )
 
