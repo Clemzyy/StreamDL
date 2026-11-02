@@ -448,7 +448,28 @@ class ContextMenuColorsTests(ErgonomicsTestCase):
         self.assertNotEqual(str(menu.cget("disabledforeground")), str(menu.cget("foreground")))
         from tkinter import font
 
-        self.assertEqual(font.Font(root=self.root, font=menu.cget("font")).actual("weight"), "bold")
+        # Thin white lettering, like the dark lettering of the light theme.
+        self.assertEqual(font.Font(root=self.root, font=menu.cget("font")).actual("weight"), "normal")
+
+    def test_unavailable_commands_are_flat_grey_on_the_dark_theme(self):
+        # Tk engraves disabled entries on Windows: a white copy one pixel
+        # lower, which looks blurred on a dark menu. Grey normal entries instead.
+        self.start_ready_app()
+        self.app.switch_theme("dark")
+        self.app.url_var.set("")
+        menu = APP.build_edit_menu(self.app.url_entry, self.app.theme_menu_items())
+        self.addCleanup(menu.destroy)
+        commands = [index for index in range(menu.index("end") + 1) if menu.type(index) == "command"]
+        self.assertEqual({str(menu.entrycget(index, "state")) for index in commands}, {"normal"})
+        muted = str(menu.cget("disabledforeground"))
+        grey = {str(menu.entrycget(index, "label")) for index in commands
+                if str(menu.entrycget(index, "foreground")) == muted}
+        self.assertEqual(grey, {"Couper", "Copier"})
+        for index in commands:
+            if str(menu.entrycget(index, "label")) in grey:
+                # No highlight on hover either.
+                self.assertEqual(str(menu.entrycget(index, "activebackground")), str(menu.cget("background")))
+                self.assertEqual(str(menu.entrycget(index, "activeforeground")), muted)
 
     def test_window_menu_and_edit_menu_share_the_theme_colors(self):
         self.start_ready_app()

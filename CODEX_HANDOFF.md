@@ -8,9 +8,9 @@ META:
   github_visibility: public
   git_identity: "Clemzy <troisquarks@proton.me>"
   workspace: "C:\Users\user\OneDrive\Bureau\Applications Python\Téléchargeur vidéo"
-  current_source: telechargeur_youtube_v1.95.pyw
-  current_app_label: "StreamDL v1.95 (window title; APP_VERSION follows the source number)"
-  next_source_version: "1.96"
+  current_source: telechargeur_youtube_v1.96.pyw
+  current_app_label: "StreamDL v1.96 (window title; APP_VERSION follows the source number)"
+  next_source_version: "1.97"
   executable_policy: "Ne pas compiler de nouvel exe sauf demande explicite. Build: py -3.13 build_exe.py [--full] [--pyinstaller] -> dist\\StreamDL.exe (Nuitka + MSVC Build Tools)"
 
 USER_PREFERENCES:
@@ -51,8 +51,9 @@ REPO_STATE:
     - telechargeur_youtube_v1.93.pyw: icônes préchargées pour les deux thèmes, remplacement explicite de l'image ttk et logos sans disque clair dans les deux modes
     - telechargeur_youtube_v1.94.pyw: icône PayPal régénérée depuis le SVG officiel et menus contextuels avec texte clair en mode sombre
     - telechargeur_youtube_v1.95.pyw: texte des menus sombres en blanc pur et gras, après comparaison du rendu réel avec la capture utilisateur
+    - telechargeur_youtube_v1.96.pyw: menus sombres en blanc fin, commandes indisponibles grises sans effet gravé
   files_expected:
-    - telechargeur_youtube_v1.95.pyw
+    - telechargeur_youtube_v1.96.pyw
     - auth_support.py
     - test_auth_support.py
     - tools_manager.py
@@ -451,6 +452,20 @@ VERSION_1_95_CHANGE:
     light Nuitka build succeeds. Both compiled dark menus were visually checked,
     including Cut and Copy enabled by selecting the isolated destination field.
     The test session exited normally.
+
+VERSION_1_96_CHANGE:
+  - The user still saw blurred grey lettering in the dark context menus (screenshot of
+    Couper/Copier unavailable): on Windows, Tk draws an entry in the disabled state
+    "engraved", with a white copy of the label one pixel lower, even when
+    disabledforeground is set. Invisible on a white menu, blurred on a dark one.
+  - add_menu_command() draws an unavailable command as a normal entry: grey label
+    (the menu's disabledforeground), grey on hover, no highlight (activebackground =
+    background) and a command that does nothing. No menu entry uses Tk's disabled state.
+  - Dark menus use thin lettering again (Segoe UI 10 normal, pure white), as the user asked:
+    the bold of 1.95 did not remove the blur, which came from the disabled entries.
+  - Tests check every entry is in the normal state, the grey and hover colors of the
+    unavailable ones, that they do nothing, and the normal font weight.
+  - Not checked by a capture: showing the real popup menu needs it on the user's screen.
 
 APP_ICON (after 1.95, no source change):
   - The old download.ico had no real transparency: a grey checkerboard was baked into the

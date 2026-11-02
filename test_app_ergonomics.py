@@ -344,9 +344,12 @@ class EditMenuTests(ErgonomicsTestCase):
             if menu.type(index) == "command"
         }
 
-    def state(self, item):
+    def available(self, item):
+        # Unavailable commands are drawn grey: never with Tk's disabled
+        # state, which Windows engraves (a blurred white copy below).
         menu, index = item
-        return str(menu.entrycget(index, "state"))
+        self.assertEqual(str(menu.entrycget(index, "state")), "normal")
+        return str(menu.entrycget(index, "foreground")) != str(menu.cget("disabledforeground"))
 
     def invoke(self, widget, label):
         menu, index = self.items(widget)[label]
@@ -378,7 +381,10 @@ class EditMenuTests(ErgonomicsTestCase):
         self.app.folder_var.set(r"C:\Vidéos")
         self.app.folder_entry.selection_clear()
         items = self.items(self.app.folder_entry)
-        self.assertEqual((self.state(items["Couper"]), self.state(items["Copier"])), ("disabled", "disabled"))
+        self.assertEqual((self.available(items["Couper"]), self.available(items["Copier"])), (False, False))
+        self.invoke(self.app.folder_entry, "Couper")
+        # Nothing selected: the grey command does nothing.
+        self.assertEqual((self.clipboard[0], self.app.folder_var.get()), ("https://youtu.be/collé", r"C:\Vidéos"))
         self.app.folder_entry.select_range(0, "end")
         self.invoke(self.app.folder_entry, "Couper")
         self.assertEqual((self.clipboard[0], self.app.folder_var.get()), (r"C:\Vidéos", ""))
@@ -393,7 +399,8 @@ class EditMenuTests(ErgonomicsTestCase):
         self.start_ready_app()
         self.app.log_box.tag_add("sel", "1.0", "1.9")
         items = self.items(self.app.log_box)
-        self.assertEqual((self.state(items["Couper"]), self.state(items["Coller"])), ("disabled", "disabled"))
+        self.assertEqual((self.available(items["Couper"]), self.available(items["Coller"])), (False, False))
+        self.assertTrue(self.available(items["Copier"]))
         self.invoke(self.app.log_box, "Copier")
         self.assertEqual(self.clipboard[0], self.app.log_box.get("1.0", "1.9"))
 
