@@ -452,6 +452,19 @@ VERSION_1_95_CHANGE:
     including Cut and Copy enabled by selecting the isolated destination field.
     The test session exited normally.
 
+APP_ICON (after 1.95, no source change):
+  - The old download.ico had no real transparency: a grey checkerboard was baked into the
+    image (alpha never below 220), so shortcuts showed a whitish square around the red
+    document, and its small sizes mixed the play triangle, badge and sound wave together.
+  - Redrawn: red document with a folded corner (vertical gradient), white play triangle,
+    dark download badge and sound wave, with real transparency. download.png is the
+    1024 px master.
+  - download.ico holds that drawing at 256 px only, chosen by the user. A 10-size version
+    (each size drawn on its own: 16-32 px document and play only, 40-64 px plus the badge)
+    was tried and rejected: the icon looked smaller by default. Do not replace it without
+    asking. Windows shrinks the 256 px image itself for the small sizes.
+  - Windows may keep the old icon of existing shortcuts in its cache until they are recreated.
+
 KNOWN_LIMITS:
   - HLS sizes remain estimates; source peak bitrates do not provide an exact file size.
   - Opera GX cookie extraction has not been tested on an installed Opera GX browser.
